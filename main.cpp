@@ -12,9 +12,9 @@ std::shared_ptr<spdlog::logger> gLog;
 // This is used by commonLibF4
 namespace Version {
 inline constexpr std::size_t MAJOR = 0;
-inline constexpr std::size_t MINOR = 1;
+inline constexpr std::size_t MINOR = 5;
 inline constexpr std::size_t PATCH = 2;
-inline constexpr auto NAME = "0.1.2"sv;
+inline constexpr auto NAME = "0.5.2"sv;
 inline constexpr auto AUTHORNAME = "disi"sv;
 inline constexpr auto PROJECT = "CCBCL"sv;
 } // namespace Version
@@ -39,6 +39,8 @@ std::atomic<bool> g_deathHandlerRegistered = false;
 // --- User Settings ---
 // Global debug flag
 bool DEBUGGING = false;
+// Timer delay for systems that struggle to load (in seconds)
+float TIMER_DELAY = 15.0f;
 // Current game time
 float CURRENT_GAME_TIME = 0.0f;
 // Global update interval (in seconds)
@@ -49,13 +51,14 @@ int INI_RELOAD_INTERVAL = 10;
 float ACTOR_SEARCH_RADIUS = 4000.0f;
 // AI settings
 float AI_HEALTH_THRESHOLD = 40.0f;
-bool AI_USE_STIMPAK = true;
+bool AI_USE_STIMPAK_ENABLED = true;
 bool AI_USE_STIMPAK_UNLIMITED = false;
 bool AI_AUTO_REVIVE = true;
 bool AI_FLEE_COMBAT = true;
 float AI_FLEE_DISTANCE = 500.0f;
-bool AI_EQUIP_ITEMS = true;
-bool AI_EQUIP_GEAR = false;
+bool AI_EQUIP_ARMOR = false;
+bool AI_EQUIP_WEAPON = false;
+std::vector<int> AI_EQUIP_SLOTS = { 42, 43, 44, 45 }; // 33 Outfit, 30 Head, 41 [A]Body, 42 [A]Left Arm, 43 [A]Right Arm, 44 [A]Left Leg, 45 [A]Right Leg
 bool AI_EQUIP_AMMO_REFILL = true;
 int AI_EQUIP_AMMO_AMOUNT = 50;
 // Movement settings
@@ -103,6 +106,7 @@ float LOOT_RADIUS = 1000.0f;
 bool LOOT_JUNK = true;
 bool LOOT_AMMO = true;
 bool LOOT_AID = true;
+bool LOOT_GEAR = true;
 int LOOT_MIN_VALUE = 0;
 int LOOT_MAX_VALUE = 800;
 bool LOOT_STEAL = false;
@@ -113,24 +117,25 @@ float XP_RATIO = 0.5f;
 float XP_KILLER_TOLERANCE = 3000.0f;
 // Buff settings
 bool BUFF_ENABLED = true;
-float BUFF_HEAL_RATE = 5.0f;
-float BUFF_COMBAT_HEAL_RATE = 5.0f;
-float BUFF_DAMAGE_RESIST = 200.0f;
-float BUFF_FIRE_RESIST = 50.0f;
-float BUFF_ELECTRICAL_RESIST = 50.0f;
-float BUFF_FROST_RESIST = 50.0f;
-float BUFF_ENERGY_RESIST = 50.0f;
-float BUFF_POISON_RESIST = 50.0f;
-float BUFF_RADIATION_RESIST = 50.0f;
-float BUFF_AGILITY = 5.0f;
-float BUFF_ENDURANCE = 5.0f;
-float BUFF_INTELLIGENCE = 5.0f;
-float BUFF_LUCK = 5.0f;
-float BUFF_PERCEPTION = 5.0f;
-float BUFF_SNEAK = 5.0f;
-float BUFF_STRENGTH = 5.0f;
-float BUFF_LOCKPICK = 5.0f;
-float BUFF_CARRYWEIGHT = 1000.0f;
+bool BUFF_SET_VALUES = false;
+float BUFF_HEAL_RATE = 1.0f;
+float BUFF_COMBAT_HEAL_RATE = 1.0f;
+float BUFF_DAMAGE_RESIST = 10.0f;
+float BUFF_FIRE_RESIST = 10.0f;
+float BUFF_ELECTRICAL_RESIST = 10.0f;
+float BUFF_FROST_RESIST = 10.0f;
+float BUFF_ENERGY_RESIST = 10.0f;
+float BUFF_POISON_RESIST = 10.0f;
+float BUFF_RADIATION_RESIST = 10.0f;
+float BUFF_AGILITY = 1.0f;
+float BUFF_ENDURANCE = 1.0f;
+float BUFF_INTELLIGENCE = 1.0f;
+float BUFF_LUCK = 1.0f;
+float BUFF_PERCEPTION = 1.0f;
+float BUFF_SNEAK = 30.0f;
+float BUFF_STRENGTH = 1.0f;
+float BUFF_LOCKPICK = 30.0f;
+float BUFF_CARRYWEIGHT = 150.0f;
 // --- Power Armor Settings ---
 bool PA_ENABLED = true;
 float PA_REPAIR_AMOUNT = 0.01f;
@@ -165,20 +170,47 @@ RE::TESForm* g_itemRepairKit = nullptr;
 // Race forms for stimpak users
 std::vector<std::uint32_t> RACE_STIMPAK_ID = {0x00013746, 0x000EAFB6}; // 00013746 Human, 000EAFB6 Ghoul
 std::vector<RE::TESRace*> g_raceStimpak;
-// Synth 3 component
-std::uint32_t RACE_SYNTH3C_ID = 0x000CFF74; // 000CFF74 Synth3 component
-RE::TESObjectMISC* g_raceSynth3C = nullptr;
 // IDLE animations
 std::uint32_t IDLE_STIMPAK_ID = 0x000B1CF9; // 000B1CF9 3rdPUseStimpakOnSelf
 RE::TESIdleForm* g_idleStimpak = nullptr;
 // Keywords
 std::uint32_t KYWD_ARMORTYPEPOWER_ID = 0x0004D8A1;    // 0004D8A1 ArmorTypePower
 RE::BGSKeyword* g_kwdArmorTypePower = nullptr;
-std::uint32_t KYWD_ISPOWERARMORFRAME_ID = 0x0015503F; // 0015503F isPowerArmorFrame
+std::uint32_t KYWD_ISPOWERARMORFRAME_ID = 0x0003430B; // 0003430B isPowerArmorFrame
 RE::BGSKeyword* g_kwdIsPowerArmorFrame = nullptr;
+std::uint32_t KYWD_ANIMAL_ID = 0x00013798;          // 00013798 Animal
+RE::BGSKeyword* g_kwdAnimal = nullptr;
+std::uint32_t KYWD_ROBOT_ID = 0x0002CB73;          // 0002CB73 Robot
+RE::BGSKeyword* g_kwdRobot = nullptr;
+std::uint32_t KYWD_SYNTH_ID = 0x0010C3CE;          // 0010C3CE Synth
+RE::BGSKeyword* g_kwdSynth = nullptr;
+std::vector<std::uint32_t> KYWD_LOOTEXCLUDE_ID_LIST;
+std::vector<RE::BGSKeyword*> g_kwdLootExclude;
 // Packages
 std::uint32_t PACK_FOLLOWERSCOMPANION_ID = 0x0002A101; // 0002A101 FollowersCompanion
 RE::TESPackage* g_packFollowersCompanion = nullptr;
+// GetSingletons
+RE::ActorValue* g_actorValueSingleton = nullptr;
+RE::ProcessLists* g_processListsSingleton = nullptr;
+RE::ActorEquipManager* g_actorEquipMgrSingleton = nullptr;
+RE::UI* g_uiSingleton = nullptr;
+// Always Loot Forms
+std::vector<std::uint32_t> ITEM_LOOTALWAYS_ID_LIST;
+std::vector<RE::TESForm*> g_itemLootAlways;
+// Lootable Form Types
+std::vector<RE::ENUM_FORM_ID> LOOTABLE_FORM_TYPES = {
+    RE::ENUM_FORM_ID::kCONT, // Containers
+    RE::ENUM_FORM_ID::kACHR, // Actor and Dead bodies
+    RE::ENUM_FORM_ID::kNPC_, // NPC
+    RE::ENUM_FORM_ID::kARMO, // Armor
+    RE::ENUM_FORM_ID::kWEAP, // Weapons
+    RE::ENUM_FORM_ID::kAMMO, // Ammo
+    RE::ENUM_FORM_ID::kMISC, // Junk/Misc
+    RE::ENUM_FORM_ID::kALCH, // Chems/Food/Aid
+    RE::ENUM_FORM_ID::kBOOK, // Magazines/Books
+    RE::ENUM_FORM_ID::kKEYM, // Keys
+    RE::ENUM_FORM_ID::kFURN  // Furniture
+};
 
 // Helper function to extract value from a line
 inline std::string GetValueFromLine(const std::string& line) {
@@ -205,6 +237,279 @@ std::string GetPluginDirectory(HMODULE hModule) {
 uint32_t ParseHexFormID(const std::string& hexStr) {
     return static_cast<uint32_t>(std::stoul(hexStr, nullptr, 16));
 }
+// Load the MCM configuration from INI file
+void LoadMCMConfig() {
+    // Get the DLL handle for this plugin
+    HMODULE hModule = GetModuleHandleA("CCBCL.dll");
+    std::filesystem::path pluginDirPath = GetPluginDirectory(hModule);
+    auto mcmConfigPath = pluginDirPath.parent_path().parent_path().parent_path() / "MCM" / "Settings" / "MCMCCBCL.ini";
+    mcmConfigPath = std::filesystem::weakly_canonical(mcmConfigPath);
+    if (DEBUGGING)
+        REX::INFO("LoadMCMConfig: Loading config from: {}", mcmConfigPath.string());
+    if (std::filesystem::exists(mcmConfigPath)) {
+        std::ifstream file(mcmConfigPath);
+        if (!file.is_open()) {
+            REX::WARN("LoadMCMConfig: Could not open MCM INI file: {}", mcmConfigPath.string());
+            return;
+        }
+        // read file...
+        std::string line;
+        while (std::getline(file, line)) {
+            // Trim whitespace
+            line.erase(0, line.find_first_not_of(" \t\r\n"));
+            line.erase(line.find_last_not_of(" \t\r\n") + 1);
+            // Skip comments and empty lines
+            if (line.empty() || line[0] == ';')
+                continue;
+            // Lower case for case-insensitive comparison
+            std::string lowerLine = ToLower(line);
+            // Search for settings and update variables accordingly
+            // --- Debugging flag ---
+            if (lowerLine.find("idebugging") == 0) {
+                std::string value = GetValueFromLine(line);
+                if (ToLower(value) == "true" || value == "1") {
+                    DEBUGGING = true;
+                } else {
+                    DEBUGGING = false;
+                }
+                continue;
+            }
+            // AI Settings
+            if (lowerLine.find("iai_use_stimpak_enabled") == 0) {
+                std::string value = GetValueFromLine(line);
+                if (ToLower(value) == "true" || value == "1") {
+                    AI_USE_STIMPAK_ENABLED = true;
+                } else {
+                    AI_USE_STIMPAK_ENABLED = false;
+                }
+                continue;
+            }
+            if (lowerLine.find("iai_use_stimpak_unlimited") == 0) {
+                std::string value = GetValueFromLine(line);
+                if (ToLower(value) == "true" || value == "1") {
+                    AI_USE_STIMPAK_UNLIMITED = true;
+                } else {
+                    AI_USE_STIMPAK_UNLIMITED = false;
+                }
+                continue;
+            }
+            if (lowerLine.find("iai_auto_revive") == 0) {
+                std::string value = GetValueFromLine(line);
+                if (ToLower(value) == "true" || value == "1") {
+                    AI_AUTO_REVIVE = true;
+                } else {
+                    AI_AUTO_REVIVE = false;
+                }
+                continue;
+            }
+            if (lowerLine.find("iai_flee_combat") == 0) {
+                std::string value = GetValueFromLine(line);
+                if (ToLower(value) == "true" || value == "1") {
+                    AI_FLEE_COMBAT = true;
+                } else {
+                    AI_FLEE_COMBAT = false;
+                }
+                continue;
+            }
+            if (lowerLine.find("iai_equip_armor") == 0) {
+                std::string value = GetValueFromLine(line);
+                if (ToLower(value) == "true" || value == "1") {
+                    AI_EQUIP_ARMOR = true;
+                } else {
+                    AI_EQUIP_ARMOR = false;
+                }
+                continue;
+            }
+            if (lowerLine.find("iai_equip_weapon") == 0) {
+                std::string value = GetValueFromLine(line);
+                if (ToLower(value) == "true" || value == "1") {
+                    AI_EQUIP_WEAPON = true;
+                } else {
+                    AI_EQUIP_WEAPON = false;
+                }
+                continue;
+            }
+            if (lowerLine.find("iai_equip_ammo_refill") == 0) {
+                std::string value = GetValueFromLine(line);
+                if (ToLower(value) == "true" || value == "1") {
+                    AI_EQUIP_AMMO_REFILL = true;
+                } else {
+                    AI_EQUIP_AMMO_REFILL = false;
+                }
+                continue;
+            }
+            // Aggression settings
+            if (lowerLine.find("iai_aggression_enabled") == 0) {
+                std::string value = GetValueFromLine(line);
+                if (ToLower(value) == "true" || value == "1") {
+                    AI_AGGRESSION_ENABLED = true;
+                } else {
+                    AI_AGGRESSION_ENABLED = false;
+                }
+                continue;
+            }
+            if (lowerLine.find("iai_aggression_sneak") == 0) {
+                std::string value = GetValueFromLine(line);
+                if (ToLower(value) == "true" || value == "1") {
+                    AI_AGGRESSION_SNEAK = true;
+                } else {
+                    AI_AGGRESSION_SNEAK = false;
+                }
+                continue;
+            }
+            // Movement settings
+            if (lowerLine.find("iai_stuck_check") == 0) {
+                std::string value = GetValueFromLine(line);
+                if (ToLower(value) == "true" || value == "1") {
+                    AI_STUCK_CHECK = true;
+                } else {
+                    AI_STUCK_CHECK = false;
+                }
+                continue;
+            }
+            // Loot settings
+            if (lowerLine.find("iloot_enabled") == 0) {
+                std::string value = GetValueFromLine(line);
+                if (ToLower(value) == "true" || value == "1") {
+                    LOOT_ENABLED = true;
+                } else {
+                    LOOT_ENABLED = false;
+                }
+                continue;
+            }
+            if (lowerLine.find("iloot_combat") == 0) {
+                std::string value = GetValueFromLine(line);
+                if (ToLower(value) == "true" || value == "1") {
+                    LOOT_COMBAT = true;
+                } else {
+                    LOOT_COMBAT = false;
+                }
+                continue;
+            }
+            if (lowerLine.find("iloot_weight_limit") == 0) {
+                std::string value = GetValueFromLine(line);
+                if (ToLower(value) == "true" || value == "1") {
+                    LOOT_WEIGHT_LIMIT = true;
+                } else {
+                    LOOT_WEIGHT_LIMIT = false;
+                }
+                continue;
+            }
+            if (lowerLine.find("iloot_junk") == 0) {
+                std::string value = GetValueFromLine(line);
+                if (ToLower(value) == "true" || value == "1") {
+                    LOOT_JUNK = true;
+                } else {
+                    LOOT_JUNK = false;
+                }
+                continue;
+            }
+            if (lowerLine.find("iloot_ammo") == 0) {
+                std::string value = GetValueFromLine(line);
+                if (ToLower(value) == "true" || value == "1") {
+                    LOOT_AMMO = true;
+                } else {
+                    LOOT_AMMO = false;
+                }
+                continue;
+            }
+            if (lowerLine.find("iloot_aid") == 0) {
+                std::string value = GetValueFromLine(line);
+                if (ToLower(value) == "true" || value == "1") {
+                    LOOT_AID = true;
+                } else {
+                    LOOT_AID = false;
+                }
+                continue;
+            }
+            if (lowerLine.find("iloot_gear") == 0) {
+                std::string value = GetValueFromLine(line);
+                if (ToLower(value) == "true" || value == "1") {
+                    LOOT_GEAR = true;
+                } else {
+                    LOOT_GEAR = false;
+                }
+                continue;
+            }
+            if (lowerLine.find("iloot_steal") == 0) {
+                std::string value = GetValueFromLine(line);
+                if (ToLower(value) == "true" || value == "1") {
+                    LOOT_STEAL = true;
+                } else {
+                    LOOT_STEAL = false;
+                }
+                continue;
+            }
+            // System
+            if (lowerLine.find("ixp_enabled") == 0) {
+                std::string value = GetValueFromLine(line);
+                if (ToLower(value) == "true" || value == "1") {
+                    XP_ENABLED = true;
+                } else {
+                    XP_ENABLED = false;
+                }
+                continue;
+            }
+            if (lowerLine.find("ichatter_enabled") == 0) {
+                std::string value = GetValueFromLine(line);
+                if (ToLower(value) == "true" || value == "1") {
+                    CHATTER_ENABLED = true;
+                } else {
+                    CHATTER_ENABLED = false;
+                }
+                continue;
+            }
+            if (lowerLine.find("ibuff_enabled") == 0) {
+                std::string value = GetValueFromLine(line);
+                if (ToLower(value) == "true" || value == "1") {
+                    BUFF_ENABLED = true;
+                } else {
+                    BUFF_ENABLED = false;
+                }
+                continue;
+            }
+            if (lowerLine.find("ibuff_set_values") == 0) {
+                std::string value = GetValueFromLine(line);
+                if (ToLower(value) == "true" || value == "1") {
+                    BUFF_SET_VALUES = true;
+                } else {
+                    BUFF_SET_VALUES = false;
+                }
+                continue;
+            }
+            if (lowerLine.find("ipa_enabled") == 0) {
+                std::string value = GetValueFromLine(line);
+                if (ToLower(value) == "true" || value == "1") {
+                    PA_ENABLED = true;
+                } else {
+                    PA_ENABLED = false;
+                }
+                continue;
+            }
+            if (lowerLine.find("icombat_enabled") == 0) {
+                std::string value = GetValueFromLine(line);
+                if (ToLower(value) == "true" || value == "1") {
+                    COMBAT_ENABLED = true;
+                } else {
+                    COMBAT_ENABLED = false;
+                }
+                continue;
+            }
+            if (lowerLine.find("iperk_enabled") == 0) {
+                std::string value = GetValueFromLine(line);
+                if (ToLower(value) == "true" || value == "1") {
+                    PERK_ENABLED = true;
+                } else {
+                    PERK_ENABLED = false;
+                }
+                continue;
+            }
+        }
+    } else {
+        REX::WARN("LoadMCMConfig: MCM config not found: {}", mcmConfigPath.string());
+    }
+}
+// Load the plugin configuration from INI file
 void LoadConfig() {
     // Clear previous perk list if any
     PERK_ID_LIST.clear();
@@ -255,6 +560,20 @@ void LoadConfig() {
                 DEBUGGING = true;
             } else {
                 DEBUGGING = false;
+            }
+            continue;
+        }
+        if (lowerLine.find("timer_delay") == 0) {
+            std::string value = GetValueFromLine(line);
+            try {
+                float delay = std::stof(value);
+                if (delay >= 0) {
+                    TIMER_DELAY = delay;
+                } else {
+                    REX::WARN("LoadConfig: Invalid Timer Delay value: {}. Must be non-negative.", value);
+                }
+            } catch (const std::exception& e) {
+                REX::WARN("LoadConfig: Error parsing Timer Delay value: {}. Exception: {}", value, e.what());
             }
             continue;
         }
@@ -318,12 +637,12 @@ void LoadConfig() {
             }
             continue;
         }
-        if (lowerLine.find("ai_use_stimpak") == 0) {
+        if (lowerLine.find("ai_use_stimpak_enabled") == 0) {
             std::string value = GetValueFromLine(line);
             if (ToLower(value) == "true" || value == "1") {
-                AI_USE_STIMPAK = true;
+                AI_USE_STIMPAK_ENABLED = true;
             } else {
-                AI_USE_STIMPAK = false;
+                AI_USE_STIMPAK_ENABLED = false;
             }
             continue;
         }
@@ -368,21 +687,36 @@ void LoadConfig() {
             }
             continue;
         }
-        if (lowerLine.find("ai_equip_items") == 0) {
+        if (lowerLine.find("ai_equip_armor") == 0) {
             std::string value = GetValueFromLine(line);
             if (ToLower(value) == "true" || value == "1") {
-                AI_EQUIP_ITEMS = true;
+                AI_EQUIP_ARMOR = true;
             } else {
-                AI_EQUIP_ITEMS = false;
+                AI_EQUIP_ARMOR = false;
             }
             continue;
         }
-        if (lowerLine.find("ai_equip_gear") == 0) {
+        if (lowerLine.find("ai_equip_weapon") == 0) {
             std::string value = GetValueFromLine(line);
             if (ToLower(value) == "true" || value == "1") {
-                AI_EQUIP_GEAR = true;
+                AI_EQUIP_WEAPON = true;
             } else {
-                AI_EQUIP_GEAR = false;
+                AI_EQUIP_WEAPON = false;
+            }
+            continue;
+        }
+        if (lowerLine.find("ai_equip_slots") == 0) {
+            std::string value = GetValueFromLine(line);
+            AI_EQUIP_SLOTS.clear();
+            std::istringstream ss(value);
+            std::string slotStr;
+            while (std::getline(ss, slotStr, ',')) {
+                try {
+                    int slot = std::stoi(slotStr);
+                    AI_EQUIP_SLOTS.push_back(slot);
+                } catch (const std::exception& e) {
+                    REX::WARN("LoadConfig: Error parsing AI Equip Slot value: {}. Exception: {}", slotStr, e.what());
+                }
             }
             continue;
         }
@@ -824,6 +1158,15 @@ void LoadConfig() {
             }
             continue;
         }
+        if (lowerLine.find("loot_gear") == 0) {
+            std::string value = GetValueFromLine(line);
+            if (ToLower(value) == "true" || value == "1") {
+                LOOT_GEAR = true;
+            } else {
+                LOOT_GEAR = false;
+            }
+            continue;
+        }
         if (lowerLine.find("loot_min_value") == 0) {
             std::string value = GetValueFromLine(line);
             try {
@@ -897,6 +1240,15 @@ void LoadConfig() {
                 BUFF_ENABLED = true;
             } else {
                 BUFF_ENABLED = false;
+            }
+            continue;
+        }
+        if (lowerLine.find("buff_set_values") == 0) {
+            std::string value = GetValueFromLine(line);
+            if (ToLower(value) == "true" || value == "1") {
+                BUFF_SET_VALUES = true;
+            } else {
+                BUFF_SET_VALUES = false;
             }
             continue;
         }
@@ -1232,16 +1584,6 @@ void LoadConfig() {
             }
             continue;
         }
-        // Synt3 component id
-        if (lowerLine.find("race_synth3c_id") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                RACE_SYNTH3C_ID = ParseHexFormID(value);
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Synt3 Component ID: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
         // Animation IDs
         if (lowerLine.find("anim_stimpak") == 0) {
             std::string value = GetValueFromLine(line);
@@ -1271,6 +1613,43 @@ void LoadConfig() {
             }
             continue;
         }
+        if (lowerLine.find("kywd_animal_id") == 0) {
+            std::string value = GetValueFromLine(line);
+            try {
+                KYWD_ANIMAL_ID = ParseHexFormID(value);
+            } catch (const std::exception& e) {
+                REX::WARN("LoadConfig: Error parsing Animal Keyword ID: {}. Exception: {}", value, e.what());
+            }
+            continue;
+        }
+        if (lowerLine.find("kywd_robot_id") == 0) {
+            std::string value = GetValueFromLine(line);
+            try {
+                KYWD_ROBOT_ID = ParseHexFormID(value);
+            } catch (const std::exception& e) {
+                REX::WARN("LoadConfig: Error parsing Robot Keyword ID: {}. Exception: {}", value, e.what());
+            }
+            continue;
+        }
+        if (lowerLine.find("kywd_synth_id") == 0) {
+            std::string value = GetValueFromLine(line);
+            try {
+                KYWD_SYNTH_ID = ParseHexFormID(value);
+            } catch (const std::exception& e) {
+                REX::WARN("LoadConfig: Error parsing Synth Keyword ID: {}. Exception: {}", value, e.what());
+            }
+            continue;
+        }
+        if (lowerLine.find("kywd_lootexclude_id") == 0) {
+            std::string value = GetValueFromLine(line);
+            try {
+                std::uint32_t kywdid = ParseHexFormID(value);
+                KYWD_LOOTEXCLUDE_ID_LIST.push_back(kywdid);
+            } catch (const std::exception& e) {
+                REX::WARN("LoadConfig: Error parsing LootExclude Keyword ID: {}. Exception: {}", value, e.what());
+            }
+            continue;
+        }
 
         // Packages
         if (lowerLine.find("pack_followerscompanion_id") == 0) {
@@ -1282,6 +1661,30 @@ void LoadConfig() {
             }
             continue;
         }
+
+        // Always loot list
+        if (lowerLine.find("item_lootalways_id") == 0) {
+            std::string value = GetValueFromLine(line);
+            try {
+                std::uint32_t formId = ParseHexFormID(value);
+                ITEM_LOOTALWAYS_ID_LIST.push_back(formId);
+            } catch (const std::exception& e) {
+                REX::WARN("LoadConfig: Error parsing Always Loot Form ID: {}. Exception: {}", value, e.what());
+            }
+            continue;
+        }
+
+        // Lootable Form Types
+        if (lowerLine.find("form_type_loot") == 0) {
+            std::string value = GetValueFromLine(line);
+            try {
+                RE::ENUM_FORM_ID  formType = RE::TESForm::GetFormTypeFromString(value.c_str());
+                LOOTABLE_FORM_TYPES.push_back(formType);
+            } catch (const std::exception& e) {
+                REX::WARN("LoadConfig: Error parsing Lootable Form Type ID: {}. Exception: {}", value, e.what());
+            }
+            continue;
+        }
     }
     file.close();
     REX::INFO("LoadConfig: Completed loading config.");
@@ -1289,7 +1692,7 @@ void LoadConfig() {
     REX::INFO(" - Update Interval: {} seconds", UPDATE_INTERVAL);
     REX::INFO(" - Reload ini every {} updates.", INI_RELOAD_INTERVAL);
     REX::INFO(" - Actor Search Radius: {}", ACTOR_SEARCH_RADIUS);
-    REX::INFO(" - AI Behavior: Threshold={}, UsesStimpak={}, UseStimpakUnlimited={}, AutoRevive={}, FleeCombat={},  FleeDistance={}, EquipItems={}, EquipGear={}, EquipAmmoRefill={}, EquipAmmoAmount={}, StuckCheck={}, StuckThreshold={}, StuckCollisions={}, StuckSpeedThreshold={}, StuckDistance={}", AI_HEALTH_THRESHOLD, AI_USE_STIMPAK, AI_USE_STIMPAK_UNLIMITED, AI_AUTO_REVIVE, AI_FLEE_COMBAT, AI_FLEE_DISTANCE, AI_EQUIP_ITEMS, AI_EQUIP_GEAR, AI_EQUIP_AMMO_REFILL, AI_EQUIP_AMMO_AMOUNT, AI_STUCK_CHECK, AI_STUCK_THRESHOLD, AI_STUCK_COLLISIONS, AI_STUCK_SPEED,
+    REX::INFO(" - AI Behavior: Threshold={}, UsesStimpak={}, UseStimpakUnlimited={}, AutoRevive={}, FleeCombat={},  FleeDistance={}, EquipArmor={}, EquipWeapon={}, EquipAmmoRefill={}, EquipAmmoAmount={}, StuckCheck={}, StuckThreshold={}, StuckCollisions={}, StuckSpeedThreshold={}, StuckDistance={}", AI_HEALTH_THRESHOLD, AI_USE_STIMPAK_ENABLED, AI_USE_STIMPAK_UNLIMITED, AI_AUTO_REVIVE, AI_FLEE_COMBAT, AI_FLEE_DISTANCE, AI_EQUIP_ARMOR, AI_EQUIP_WEAPON, AI_EQUIP_AMMO_REFILL, AI_EQUIP_AMMO_AMOUNT, AI_STUCK_CHECK, AI_STUCK_THRESHOLD, AI_STUCK_COLLISIONS, AI_STUCK_SPEED,
               AI_STUCK_DISTANCE);
     REX::INFO(" - AI Aggression Settings: Enabled={}, All={}, AggressionSneak={}, AggressionRadius0={}, AggressionRadius1={}, AggressionRadius2={}", AI_AGGRESSION_ENABLED, AI_AGGRESSION_ALL, AI_AGGRESSION_SNEAK, AI_AGGRESSION_RADIUS0, AI_AGGRESSION_RADIUS1, AI_AGGRESSION_RADIUS2);
     REX::INFO(" - Chatter Settings: Enabled={}, Chatter Multiplier={}, Sneak Multiplier={}", CHATTER_ENABLED, CHATTER_MULTIPLIER, CHATTER_MULTIPLIER_SNEAK);
@@ -1297,9 +1700,9 @@ void LoadConfig() {
     REX::INFO("   - Ranged Modifiers: Adjustment={}, Crouching={}, Strafe={}, Waiting={}, Accuracy={}", COMBAT_RANGED_ADJUSTMENT, COMBAT_RANGED_CROUCHING, COMBAT_RANGED_STRAFE, COMBAT_RANGED_WAITING, COMBAT_RANGED_ACCURACY);
     REX::INFO("   - Close-Quarters Modifiers: Fallback={}, Circle={}, Disengage={}, Flank={}, ThrowGrenade={}", COMBAT_CLOSE_FALLBACK, COMBAT_CLOSE_CIRCLE, COMBAT_CLOSE_DISENGAGE, COMBAT_CLOSE_FLANK, COMBAT_CLOSE_THROW_GRENADE);
     REX::INFO("   - Cover Modifiers: Distance={}", COMBAT_COVER_DISTANCE);
-    REX::INFO(" - Loot Settings: Enabled={}, Combat={}, Radius={}, Junk={}, Ammo={}, Aid={}, MinValue={}, MaxValue={}, Steal={}, WeightLimit={}", LOOT_ENABLED, LOOT_COMBAT, LOOT_RADIUS, LOOT_JUNK, LOOT_AMMO, LOOT_AID, LOOT_MIN_VALUE, LOOT_MAX_VALUE, LOOT_STEAL, LOOT_WEIGHT_LIMIT);
+    REX::INFO(" - Loot Settings: Enabled={}, Combat={}, Radius={}, Junk={}, Ammo={}, Aid={}, Gear={}, MinValue={}, MaxValue={}, Steal={}, WeightLimit={}", LOOT_ENABLED, LOOT_COMBAT, LOOT_RADIUS, LOOT_JUNK, LOOT_AMMO, LOOT_AID, LOOT_GEAR, LOOT_MIN_VALUE, LOOT_MAX_VALUE, LOOT_STEAL, LOOT_WEIGHT_LIMIT);
     REX::INFO(" - XP Gain Settings: Enabled={}, Ratio={}, KillerTolerance={}", XP_ENABLED, XP_RATIO, XP_KILLER_TOLERANCE);
-    REX::INFO(" - Buff Settings: Enabled={}, HealRate={}, CombatHealRate={}, DmgResist={}, FireResist={}, ElectricalResist={}, FrostResist={}, EnergyResist={}, PoisonResist={}, RadiationResist={}", BUFF_ENABLED, BUFF_HEAL_RATE, BUFF_COMBAT_HEAL_RATE, BUFF_DAMAGE_RESIST, BUFF_FIRE_RESIST, BUFF_ELECTRICAL_RESIST, BUFF_FROST_RESIST, BUFF_ENERGY_RESIST, BUFF_POISON_RESIST, BUFF_RADIATION_RESIST);
+    REX::INFO(" - Buff Settings: Enabled={}, SetValues={}, HealRate={}, CombatHealRate={}, DmgResist={}, FireResist={}, ElectricalResist={}, FrostResist={}, EnergyResist={}, PoisonResist={}, RadiationResist={}", BUFF_ENABLED, BUFF_SET_VALUES, BUFF_HEAL_RATE, BUFF_COMBAT_HEAL_RATE, BUFF_DAMAGE_RESIST, BUFF_FIRE_RESIST, BUFF_ELECTRICAL_RESIST, BUFF_FROST_RESIST, BUFF_ENERGY_RESIST, BUFF_POISON_RESIST, BUFF_RADIATION_RESIST);
     REX::INFO(" - Buff Attributes: Agility={}, Endurance={}, Intelligence={}, Lockpick={}, Luck={}, Perception={}, Sneak={}, Strength={}, CarryWeight={}", BUFF_AGILITY, BUFF_ENDURANCE, BUFF_INTELLIGENCE, BUFF_LOCKPICK, BUFF_LUCK, BUFF_PERCEPTION, BUFF_SNEAK, BUFF_STRENGTH, BUFF_CARRYWEIGHT);
     REX::INFO(" - Power Armor Settings: Enabled={}, RepairAmount={}", PA_ENABLED, PA_REPAIR_AMOUNT);
     REX::INFO(" - Perk Settings: Enabled={}, PerkCount={}", PERK_ENABLED, PERK_ID_LIST.size());
@@ -1311,10 +1714,69 @@ void LoadConfig() {
     REX::INFO(" - Stimpak Item ID: 0x{:08X}", ITEM_STIMPAK_ID);
     REX::INFO(" - Repair Kit Item ID: 0x{:08X}", ITEM_REPAIRKIT_ID);
     REX::INFO(" - Stimpak Race IDs Count: {}", RACE_STIMPAK_ID.size());
-    REX::INFO(" - Synt3 Component ID: 0x{:08X}", RACE_SYNTH3C_ID);
     REX::INFO(" - Animation IDs: Stimpak=0x{:08X}", IDLE_STIMPAK_ID);
-    REX::INFO(" - Keyword IDs: ArmorTypePower=0x{:08X}, IsPowerArmorFrame=0x{:08X}", KYWD_ARMORTYPEPOWER_ID, KYWD_ISPOWERARMORFRAME_ID);
+    REX::INFO(" - Keyword IDs: ArmorTypePower=0x{:08X}, IsPowerArmorFrame=0x{:08X}, Animal=0x{:08X}, Robot=0x{:08X}, Synth=0x{:08X}, Kywd_lootexclude_id size={}", KYWD_ARMORTYPEPOWER_ID, KYWD_ISPOWERARMORFRAME_ID, KYWD_ANIMAL_ID, KYWD_ROBOT_ID, KYWD_SYNTH_ID, KYWD_LOOTEXCLUDE_ID_LIST.size());
     REX::INFO(" - Package IDs: FollowersCompanion=0x{:08X}", PACK_FOLLOWERSCOMPANION_ID);
+    REX::INFO(" - Always Loot Item IDs Count: {}", ITEM_LOOTALWAYS_ID_LIST.size());
+    REX::INFO(" - Lootable Form Types Count: {}", LOOTABLE_FORM_TYPES.size());
+}
+
+// Helper function to initialize timers and event sinks
+void InitializeTimersAndEvents() {
+    // Register and start our periodic update task
+    if (g_updateTimer.IsRunning()) {
+        g_updateTimer.Stop();
+    }
+    if (!g_updateTimer.IsRunning()) {
+        g_updateTimer.Start(UPDATE_INTERVAL, []() { Update_Internal(); });
+        REX::INFO("Update timer started. Every {} seconds.", UPDATE_INTERVAL);
+    }
+    // Start movement timer (runs every 0.1 seconds = 10 times per second)
+    if (g_movementTimer.IsRunning()) {
+        g_movementTimer.Stop();
+    }
+    if (!g_movementTimer.IsRunning()) {
+        g_movementTimer.Start(0.1f, []() { MovementSystem::ProcessCompanionTasks(0.1f); });
+        REX::INFO("Companion system timer started (10Hz update rate).");
+    }
+    // Register death event sink for companion kill XP tracking
+    RE::BSTEventSource<RE::TESDeathEvent>* eventSourceDeath = RE::TESDeathEvent::GetEventSource();
+    if (eventSourceDeath) {
+        eventSourceDeath->RegisterSink(CompanionKillEventSink::GetSingleton());
+        REX::INFO("Successfully registered death event sink for companion kills.");
+    } else {
+        REX::WARN("Failed to get death event source.");
+    }
+}
+
+// Delayed timer start helper
+void ScheduleDelayedInitialization(float delaySeconds) {
+    // Static timer persists across function calls
+    static CCB_RepeatingTimer initDelayTimer;
+    static bool hasBeenScheduled = false;
+    // Prevent multiple schedules
+    if (hasBeenScheduled) {
+        REX::WARN("Delayed initialization already scheduled, ignoring duplicate call.");
+        return;
+    }
+    hasBeenScheduled = true;
+    // Start a timer that will fire once after the delay
+    initDelayTimer.Start(delaySeconds, []() {
+        static bool hasInitialized = false;
+        // Only initialize once
+        if (!hasInitialized) {
+            hasInitialized = true;
+            REX::INFO("Delayed initialization executing after wait period...");
+            InitializeTimersAndEvents();
+            // Stop this timer since we only needed it once
+            // (Note: accessing the static timer from the parent scope)
+            static CCB_RepeatingTimer* timerPtr = nullptr;
+            if (timerPtr) {
+                timerPtr->Stop();
+            }
+        }
+    });
+    REX::INFO("Scheduled delayed initialization to start in {} seconds.", delaySeconds);
 }
 
 // Message handler definition
@@ -1339,57 +1801,14 @@ void F4SEMessageHandler(F4SE::MessagingInterface::Message* a_message) {
         break;
     case F4SE::MessagingInterface::kPostLoadGame:
         REX::INFO("Received kMessage_PostLoadGame. A save game has been loaded.");
-        // Register and start our periodic update task
-        if (g_updateTimer.IsRunning()) {
-            g_updateTimer.Stop();
-        }
-        if (!g_updateTimer.IsRunning()) {
-            g_updateTimer.Start(UPDATE_INTERVAL, []() { Update_Internal(); });
-            REX::INFO("Update timer started. Every {} seconds.", UPDATE_INTERVAL);
-        }
-        // Start movement timer (runs every 0.1 seconds = 10 times per second)
-        if (g_movementTimer.IsRunning()) {
-            g_movementTimer.Stop();
-        }
-        if (!g_movementTimer.IsRunning()) {
-            g_movementTimer.Start(0.1f, []() { MovementSystem::ProcessCompanionTasks(0.1f); });
-            REX::INFO("Companion system timer started (10Hz update rate).");
-        }
-        // Register death event sink for companion kill XP tracking
-        eventSourceDeath = RE::TESDeathEvent::GetEventSource();
-        if (eventSourceDeath) {
-            eventSourceDeath->RegisterSink(CompanionKillEventSink::GetSingleton());
-            REX::INFO("Successfully registered death event sink for companion kills.");
-        } else {
-            REX::WARN("Failed to get death event source.");
-        }
+        // Register and start our periodic update task and events
+        ScheduleDelayedInitialization(TIMER_DELAY);
         break;
     case F4SE::MessagingInterface::kNewGame:
         REX::INFO("Received kMessage_NewGame. A new game has been loaded.");
-        // Register and start our periodic update task
-        if (g_updateTimer.IsRunning()) {
-            g_updateTimer.Stop();
-        }
-        if (!g_updateTimer.IsRunning()) {
-            g_updateTimer.Start(UPDATE_INTERVAL, []() { Update_Internal(); });
-            REX::INFO("Update timer started. Every {} seconds.", UPDATE_INTERVAL);
-        }
-        // Start movement timer (runs every 0.1 seconds = 10 times per second)
-        if (g_movementTimer.IsRunning()) {
-            g_movementTimer.Stop();
-        }
-        if (!g_movementTimer.IsRunning()) {
-            g_movementTimer.Start(0.1f, []() { MovementSystem::ProcessCompanionTasks(0.1f); });
-            REX::INFO("Companion system timer started (10Hz update rate).");
-        }
-        // Register death event sink for companion kill XP tracking
-        eventSourceDeath = RE::TESDeathEvent::GetEventSource();
-        if (eventSourceDeath) {
-            eventSourceDeath->RegisterSink(CompanionKillEventSink::GetSingleton());
-            REX::INFO("Successfully registered death event sink for companion kills.");
-        } else {
-            REX::WARN("Failed to get death event source.");
-        }
+        // Schedule timer initialization with a delay to avoid race conditions
+        // during new game world initialization
+        ScheduleDelayedInitialization(TIMER_DELAY);
         break;
     }
 }
