@@ -26,8 +26,9 @@ extern const F4SE::PapyrusInterface *g_papyrusInterface;
 extern const F4SE::TaskInterface *g_taskInterface;
 
 // --- Global Variables ---
-// Expose config load function
+// Expose config load functions
 void LoadConfig();
+void LoadMCMConfig();
 // Timers
 extern CCB_RepeatingTimer g_updateTimer;
 extern CCB_RepeatingTimer g_movementTimer;
@@ -46,13 +47,14 @@ extern int INI_RELOAD_INTERVAL;
 extern float ACTOR_SEARCH_RADIUS;
 // AI behavior settings
 extern float AI_HEALTH_THRESHOLD;
-extern bool AI_USE_STIMPAK;
+extern bool AI_USE_STIMPAK_ENABLED;
 extern bool AI_USE_STIMPAK_UNLIMITED;
 extern bool AI_AUTO_REVIVE;
 extern bool AI_FLEE_COMBAT;
 extern float AI_FLEE_DISTANCE;
-extern bool AI_EQUIP_ITEMS;
-extern bool AI_EQUIP_GEAR;
+extern bool AI_EQUIP_ARMOR;
+extern bool AI_EQUIP_WEAPON;
+extern std::vector<int> AI_EQUIP_SLOTS;
 extern bool AI_EQUIP_AMMO_REFILL;
 extern int AI_EQUIP_AMMO_AMOUNT;
 // Movement settings
@@ -100,6 +102,7 @@ extern float LOOT_RADIUS;
 extern bool LOOT_JUNK;
 extern bool LOOT_AMMO;
 extern bool LOOT_AID;
+extern bool LOOT_GEAR;
 extern int LOOT_MIN_VALUE;
 extern int LOOT_MAX_VALUE;
 extern bool LOOT_STEAL;
@@ -110,6 +113,7 @@ extern float XP_RATIO;
 extern float XP_KILLER_TOLERANCE;
 // Buff settings
 extern bool BUFF_ENABLED;
+extern bool BUFF_SET_VALUES;
 extern float BUFF_HEAL_RATE;
 extern float BUFF_COMBAT_HEAL_RATE;
 extern float BUFF_DAMAGE_RESIST;
@@ -165,9 +169,6 @@ extern RE::TESForm *g_itemRepairKit;
 // Race forms for stimpak users
 extern std::vector<std::uint32_t> RACE_STIMPAK_ID;
 extern std::vector<RE::TESRace *> g_raceStimpak;
-// Synth 3 component
-extern std::uint32_t RACE_SYNTH3C_ID;
-extern RE::TESObjectMISC *g_raceSynth3C;
 // IDLE animations
 extern std::uint32_t IDLE_STIMPAK_ID;
 extern RE::TESIdleForm *g_idleStimpak;
@@ -176,9 +177,27 @@ extern std::uint32_t KYWD_ARMORTYPEPOWER_ID;
 extern RE::BGSKeyword* g_kwdArmorTypePower;
 extern std::uint32_t KYWD_ISPOWERARMORFRAME_ID;
 extern RE::BGSKeyword* g_kwdIsPowerArmorFrame;
+extern std::uint32_t KYWD_ANIMAL_ID;
+extern RE::BGSKeyword* g_kwdAnimal;
+extern std::uint32_t KYWD_ROBOT_ID;
+extern RE::BGSKeyword* g_kwdRobot;
+extern std::uint32_t KYWD_SYNTH_ID;
+extern RE::BGSKeyword* g_kwdSynth;
+extern std::vector<std::uint32_t> KYWD_LOOTEXCLUDE_ID_LIST;
+extern std::vector<RE::BGSKeyword*> g_kwdLootExclude;
+// Always Loot Forms
+extern std::vector<std::uint32_t> ITEM_LOOTALWAYS_ID_LIST;
+extern std::vector<RE::TESForm*> g_itemLootAlways;
 // Packages
 extern std::uint32_t PACK_FOLLOWERSCOMPANION_ID;
 extern RE::TESPackage* g_packFollowersCompanion;
+// GetSingletons
+extern RE::ActorValue* g_actorValueSingleton;
+extern RE::ProcessLists* g_processListsSingleton;
+extern RE::ActorEquipManager* g_actorEquipMgrSingleton;
+extern RE::UI* g_uiSingleton;
+// Loot Form Types
+extern std::vector<RE::ENUM_FORM_ID> LOOTABLE_FORM_TYPES;
 
 // REX Logging Compatibility
 #undef ERROR

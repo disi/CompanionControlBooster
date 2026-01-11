@@ -120,8 +120,6 @@ struct TrackedActorData
 {
     RE::Actor* actor;                    // Pointer to the actor
     ENEMY_TIER tier;                     // Threat level (for enemies)
-    bool aiUpdated;                      // Whether AI was updated
-    bool buffed;                         // Whether buffs were applied
     float distanceToPlayer;              // Distance in units
     RE::NiPoint3 position;               // Current position
     std::uint32_t lifeState;             // Current LIFE_STATE
@@ -174,17 +172,17 @@ namespace ActorTracking
 {
     // Faster loop to update companion flags
     struct CompanionFlags {
-        std::atomic<bool> stuck{false};
-        std::atomic<int> stuckCounter{0};
-        std::atomic<float> velocity{0.0f};
-        std::atomic<bool> lost{false};
-        std::atomic<float> lastPosX{0.0f};
-        std::atomic<float> lastPosY{0.0f};
-        std::atomic<float> lastPosZ{0.0f};
+        float lastPosX = 0.0f;
+        float lastPosY = 0.0f;
+        float lastPosZ = 0.0f;
+        float velocity = 0.0f;
+        int stuckCounter = 0;
+        bool stuck = false;
+        bool lost = false;
     };
     // Fast per-companion flags (mutex only for map structural changes)
     extern std::mutex g_companionFlagsMutex;
-    extern std::unordered_map<RE::Actor*, CompanionFlags> g_companionFlags;
+    extern std::unordered_map<RE::Actor*, std::unique_ptr<CompanionFlags>> g_companionFlags;
     void EnsureCompanionFlagEntry(RE::Actor* actor);
     void SyncCompanionFlagsWithSnapshot(const std::vector<TrackedActorData>& snapshot);
     bool GetActorStuckStatusFast(RE::Actor* actor);
@@ -192,10 +190,10 @@ namespace ActorTracking
     int GetActorStuckCounterFast(RE::Actor* actor);
     void IncrementActorStuckCounterFast(RE::Actor* actor);
     void SetActorStuckCounterFast(RE::Actor* actor, int counter);
+    void SetActorVelocityFast(RE::Actor* actor, float vel);
     float GetActorVelocityFast(RE::Actor* actor);
     void SetActorLastPositionFast(RE::Actor* actor, const RE::NiPoint3& pos);
     void GetActorLastPositionFast(RE::Actor* actor, RE::NiPoint3& outPos);
-    void SetActorVelocityFast(RE::Actor* actor, float vel);
     bool GetActorLostStatusFast(RE::Actor* actor);
     void SetActorLostStatusFast(RE::Actor* actor, bool lost);
     // normal data tracking (mutex for entire data set)
@@ -345,28 +343,31 @@ private:
 
 // --- FUNCTIONS ---
 
-void ActionCompanions_Internal();
+void ActionCompanions_Internal(std::vector<TrackedActorData> companionData);
 RE::BGSInventoryItem* ActorAddInventoryItem_Internal(RE::Actor *actor, RE::TESForm *itemForm, std::int32_t count);
 void ActorRemoveInventoryItem_Internal(RE::Actor* actor, RE::TESForm* itemForm, std::int32_t count);
-void ApplyAIAggression_Internal();
-void ApplyPerksToCompanions_Internal();
-void ApplyKeywordsToCompanions_Internal();
-void BuffCompanions_Internal();
+bool AIAccessTest_Internal(RE::TESNPC* npc);
+void ApplyAIAggression_Internal(std::vector<TrackedActorData> companionData);
+void ApplyPerksToCompanions_Internal(std::vector<TrackedActorData> companionData);
+void ApplyKeywordsToCompanions_Internal(std::vector<TrackedActorData> companionData);
+void BuffCompanionsMinValues_Internal(std::vector<TrackedActorData> companionData);
+void BuffCompanionsSetValues_Internal(std::vector<TrackedActorData> companionData);
 bool CheckActorHasItem_Internal(RE::Actor* actor, RE::TESForm* itemForm);
 ActorStateData CheckActorStates_Internal(RE::Actor* actor);
 bool CheckActorStatesMatch_Internal(RE::Actor* actor, std::uint32_t lifeStateFilter = 0xFF, std::uint32_t weaponStateFilter = 0xFF, std::uint32_t gunStateFilter = 0xFF, std::uint32_t interactingStateFilter = 0xFF);
+bool CheckIsCurrentCellEncounterZone_Internal();
 bool CheckIsCurrentCellSettlement_Internal();
 TrackedActorData CreateTrackedData_Internal(RE::Actor* actor, ENEMY_TIER tier = ENEMY_TIER::LOW);
-void CompanionsSetMortality_Internal();
 EnemyAnalysis EnemyActorAnalyze_Internal(RE::Actor* actor);
 std::map<ENEMY_TIER, int> EnemyActorAnalyzeThreatLevel_Internal(std::vector<TrackedActorData> enemyData);
-void EquipCompanions_Internal();
-void EquipAmmunition_Internal();
+void EquipCompanions_Internal(std::vector<TrackedActorData> companionData);
+void EquipAmmunition_Internal(std::vector<TrackedActorData> companionData);
 void EquipInventoryItem_Internal(RE::Actor* aNPC, RE::BGSInventoryItem* aInvItem);
+bool EquipSlotCheck_Internal(RE::Actor* actor, RE::TESObjectARMO* armor);
 float GetActorAngleToActor(const RE::Actor* src, const RE::Actor* dst);
 float GetActorDistanceToObject_Internal(RE::Actor* actor, RE::TESObjectREFR* object);
 float GetActorDistanceToPlayer_Internal(RE::Actor* actor);
-std::vector<RE::TESObjectREFR*> GetAllReferencesInCurrentCell_Internal();
+std::vector<RE::TESObjectREFR*> GetAllLootReferencesInCurrentCell_Internal();
 std::vector<RE::Actor*> GetAllActors_Internal();
 RE::BGSInventoryItem::Stack* GetInventoryItemStackData_Internal(RE::BGSInventoryItem* invItem);
 RE::NiPoint3 GetPointXY_Internal(RE::NiPoint3 a_pos, RE::CFilter a_filter, float a_stepRadians, float a_scanDistance, float a_moveDistance);
@@ -380,19 +381,29 @@ void InitializeVariables_Internal();
 bool IsActorActiveCompanion_Internal(RE::Actor* actor);
 bool IsActorEnemy_Internal(RE::Actor* actor);
 bool IsActorExcluded_Internal(RE::Actor* actor);
+bool IsActorInScene_Internal(RE::Actor* actor);
 bool IsActorItemEquipped_Internal(RE::Actor *actor, RE::BGSInventoryItem *invItem);
 bool IsActorPlayerOrCompanion_Internal(RE::Actor* actor);
+bool IsActorRaceHumanoid_Internal(RE::Actor* actor);
+bool IsActorRaceSynth_Internal(RE::Actor* actor);
 bool IsActorVendor_Internal(RE::Actor* actor);
+bool IsActorWeightLimit_Internal(RE::Actor* actor);
 bool IsArmorItem_Internal(RE::TESForm* itemForm);
+bool IsArmorPower_Internal(RE::TESObjectREFR* armor);
+bool IsArmorPower_Internal(RE::BGSInventoryItem* invArmor);
 bool IsArmorPowerFrame_Internal(RE::TESObjectREFR* armor);
-bool IsInventoryMenuOpen_Internal();
+bool IsItemOwnedByPlayer_Internal(RE::TESObjectREFR* source);
+bool IsLootableFormType_Internal(RE::TESObjectREFR* source);
+bool IsLootAlways_Internal(RE::TESForm* itemForm);
+bool IsLootKeywordExcluded_Internal(RE::TESForm* itemForm);
+bool IsMenuOpen_Internal();
 bool IsWeaponItem_Internal(RE::TESForm* itemForm);
 RE::TESObjectREFR::RemoveItemData LootBuildRemoveItemData_Internal(RE::BGSInventoryItem *aInventoryItem, RE::TESObjectREFR *aContainer, std::int32_t aCount);
-std::int32_t LootItems_Internal();
+std::int32_t LootItems_Internal(std::vector<TrackedActorData> companionData);
 bool LootItemsWeaponLooseNearCorpse_Internal(RE::TESObjectREFR* source, RE::Actor* companion);
 bool LootItemsFromReference_Internal(RE::TESObjectREFR* source, RE::Actor* companion);
-bool LootItemFilter_Internal(RE::TESForm* a_FormRef);
 bool LootItemFilter_Internal(RE::TESForm* aForm);
+void RemoveAIAggression_Internal(std::vector<TrackedActorData> companionData);
 void SetCompanionChatter_Internal(RE::Actor* comp);
 void SetCompanionCombatAI_Internal(RE::Actor* comp, RE::TESCombatStyle* combatStyle);
 void Update_Internal();

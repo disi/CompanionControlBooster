@@ -14,15 +14,23 @@ std::vector<TrackedActorData> g_neutralNPCs_prev;
 } // namespace ActorTracking
 // companion flags storage
 std::mutex ActorTracking::g_companionFlagsMutex;
-std::unordered_map<RE::Actor*, ActorTracking::CompanionFlags> ActorTracking::g_companionFlags;
+std::unordered_map<RE::Actor*, std::unique_ptr<ActorTracking::CompanionFlags>> ActorTracking::g_companionFlags;
 // Reload interval counter
 int g_iniReloadCounter = 0;
 // Global for max enemy health in cell initialized to 1.0 to avoid division by zero
 std::atomic<float> g_enemyMaxHealthInCell = 1.0f;
-// Global settlement flag
+// Global cell flags
 bool g_isInSettlement = false;
+bool g_isInEncounterZone = false;
+bool g_playerInCombat = false;
+bool g_playerIsSneaking = false;
 // Main thread work pending flag
 std::atomic<bool> g_isMainThreadWorkPending = false;
+// Throttle XP awards to at most once per second
+static std::mutex s_lastXpMutex;
+static std::chrono::steady_clock::time_point s_lastXpTime = std::chrono::steady_clock::now() - std::chrono::seconds(2);
+// Looted Items tracking
+std::unordered_set<RE::TESFormID> g_lootedItems;
 
 // --- EVENTS ---
 
@@ -30,9 +38,25 @@ std::atomic<bool> g_isMainThreadWorkPending = false;
 RE::BSEventNotifyControl CompanionKillEventSink::ProcessEvent(const RE::TESDeathEvent& a_event, RE::BSTEventSource<RE::TESDeathEvent>* a_eventSource) {
     if (!XP_ENABLED)
         return RE::BSEventNotifyControl::kContinue;
+    // Validate event data
     if (!a_event.actorDying || !a_event.actorKiller) {
         return RE::BSEventNotifyControl::kContinue;
     }
+    // Only process death events where the actor is dead
+    if (!a_event.dead)
+        return RE::BSEventNotifyControl::kContinue;
+    // Check throttle timer
+    std::lock_guard<std::mutex> lk(s_lastXpMutex);
+    auto now = std::chrono::steady_clock::now();
+    if (now - s_lastXpTime < std::chrono::seconds(1)) {
+        if (DEBUGGING) {
+            REX::INFO("CompanionKillEventSink: XP award skipped — throttled (last award {:.3f}s ago).", std::chrono::duration<float>(now - s_lastXpTime).count());
+        }
+        return RE::BSEventNotifyControl::kContinue;
+    }
+    // Set new last XP time
+    s_lastXpTime = now;
+    // Get victim and killer actors
     auto* victim = a_event.actorDying->As<RE::Actor>();
     auto* killer = a_event.actorKiller->As<RE::Actor>();
     auto* player = RE::PlayerCharacter::GetSingleton();
@@ -56,13 +80,13 @@ RE::BSEventNotifyControl CompanionKillEventSink::ProcessEvent(const RE::TESDeath
         if (!companion)
             continue;
         // Check if companion is alive (essential actors need to pass false for isDead check)
-        if (companion->IsDead(false))
+        if (!companionData.lifeState == ACTOR_STATE::ALIVE)
             continue;
         // Check if companion is in combat
-        if (!companion->IsInCombat())
+        if (!companionData.isAlerted)
             continue;
         // Calculate distance between COMPANION and VICTIM position
-        float distance = companion->GetPosition().GetDistance(victimPos);
+        float distance = companionData.position.GetDistance(victimPos);
         if (distance < closestDistance) {
             closestDistance = distance;
             closestCompanion = companion;
@@ -79,9 +103,10 @@ RE::BSEventNotifyControl CompanionKillEventSink::ProcessEvent(const RE::TESDeath
         auto* victimNPC = victim->GetNPC();
         if (victimNPC && victimNPC->actorData.level > 0) {
             auto difficultyLevel = player->GetDifficultyLevel();
-            float awardedXP = victimNPC->actorData.level * 5.0f * XP_RATIO;
-            auto experienceReward = RE::GamePlayFormulas::GetExperienceReward(RE::GamePlayFormulas::EXPERIENCE_ACTIVITY::kKillNPC, difficultyLevel, awardedXP);
-            player->RewardExperience(experienceReward, true, victim, nullptr);
+            float awardedXP = victimNPC->actorData.level;
+            auto experienceReward = RE::GamePlayFormulas::GetExperienceReward(RE::GamePlayFormulas::EXPERIENCE_ACTIVITY::kKillNPC, difficultyLevel, awardedXP) * XP_RATIO;
+            auto clampedXP = std::clamp(experienceReward, 1.0f, 1000000.0f);
+            player->RewardExperience(clampedXP, true, victim, nullptr);
             if (DEBUGGING) {
                 REX::INFO("CompanionKillEventSink: Awarded {:.0f} XP for level {} enemy", awardedXP, victimNPC->actorData.level);
                 REX::INFO("-----------------------------------------------------------------");
@@ -105,13 +130,19 @@ void Update_Internal() {
             g_updateTimer.Stop();
             return;
         }
+        // Check if player is in a scene
+        if (IsActorInScene_Internal(player)) {
+            if (DEBUGGING)
+                REX::WARN("Update_Internal: Player is currently in a scene, cannot get actors");
+            return;
+        }
     });
     // Reload INI settings if the interval is set
     if (INI_RELOAD_INTERVAL > 0) {
         g_iniReloadCounter++;
         if (g_iniReloadCounter >= INI_RELOAD_INTERVAL) {
-            // Load config
-            LoadConfig();
+            // Load MCM config
+            LoadMCMConfig();
             // Reset counter
             g_iniReloadCounter = 0;
             if (DEBUGGING)
@@ -120,13 +151,22 @@ void Update_Internal() {
     }
     // Initialize the global variables in case the game data wasn't ready yet
     InitializeVariables_Internal();
+    // Check if the player paused the game
+    if (IsMenuOpen_Internal()) {
+        if (DEBUGGING)
+            REX::INFO("Update_Internal: Game is paused, skipping update.");
+        return;
+    }
     // Continue with update
     if (DEBUGGING)
         REX::INFO("========================================================================");
-    // Check if this is a settlement cell
+    // Check the current cell
     g_isInSettlement = CheckIsCurrentCellSettlement_Internal();
-    if (DEBUGGING)
+    g_isInEncounterZone = CheckIsCurrentCellEncounterZone_Internal();
+    if (DEBUGGING) {
         REX::INFO("Update_Internal: Info - Current cell is {}a settlement.", g_isInSettlement ? "" : "not ");
+        REX::INFO("Update_Internal: Info - Current cell is {}an encounter zone.", g_isInEncounterZone ? "" : "not ");
+    }
     if (DEBUGGING)
         REX::INFO("-----------------------------------------------------------------------");
     if (DEBUGGING)
@@ -154,30 +194,45 @@ void Update_Internal() {
     if (DEBUGGING) {
         auto neutralData = ActorTracking::GetNeutralNPCData();
         auto enemyData = ActorTracking::GetEnemyData();
-        auto enemyTierCounts = EnemyActorAnalyzeThreatLevel_Internal(enemyData);
         REX::INFO("Update_Internal: Actors - Current actor tracking summary:");
         REX::INFO("  - Companions: {}", companionData.size());
         REX::INFO("  - Neutral NPCs: {}", neutralData.size());
         REX::INFO("  - Enemies: {}", enemyData.size());
-        REX::INFO("    - Low Tier: {}", enemyTierCounts[ENEMY_TIER::LOW]);
-        REX::INFO("    - Medium Tier: {}", enemyTierCounts[ENEMY_TIER::MEDIUM]);
-        REX::INFO("    - High Tier: {}", enemyTierCounts[ENEMY_TIER::HIGH]);
+        if (enemyData.size() > 0) {
+            auto enemyTierCounts = EnemyActorAnalyzeThreatLevel_Internal(enemyData);
+            REX::INFO("    - Low Tier: {}", enemyTierCounts[ENEMY_TIER::LOW]);
+            REX::INFO("    - Medium Tier: {}", enemyTierCounts[ENEMY_TIER::MEDIUM]);
+            REX::INFO("    - High Tier: {}", enemyTierCounts[ENEMY_TIER::HIGH]);
+        }
     }
     if (DEBUGGING)
         REX::INFO("-----------------------------------------------------------------------");
     // Only modify game data on the main thread
     if (g_taskInterface && !g_isMainThreadWorkPending) {
         g_isMainThreadWorkPending = true;
-        g_taskInterface->AddTask([]() {
+        g_taskInterface->AddTask([companionData]() {
             // Threadsafe work
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            if (!player)
+                return;
+            g_playerInCombat = player->IsInCombat();
+            g_playerIsSneaking = player->IsSneaking();
             if (DEBUGGING)
                 REX::INFO("Update_Internal: -------- Running functions on the main thread. --------");
-            if (AI_AGGRESSION_ENABLED) {
+            // apply if AI Aggression is enabled and we are in an encounter zone or the player is in combat or sneaking with AI_AGGRESSION_SNEAK enabled
+            if (AI_AGGRESSION_ENABLED && ((g_isInEncounterZone && !g_isInSettlement) || g_playerInCombat || (AI_AGGRESSION_SNEAK && g_playerIsSneaking))) {
                 if (DEBUGGING)
                     REX::INFO("-----------------------------------------------------------------------");
                 if (DEBUGGING)
                     REX::INFO("Update_Internal: Aggression - Updating companion aggression states...");
-                ApplyAIAggression_Internal();
+                ApplyAIAggression_Internal(companionData);
+                if (DEBUGGING)
+                    REX::INFO("-----------------------------------------------------------------------");
+            // Remove AI Aggression if disabled
+            } else {
+                if (DEBUGGING)
+                    REX::INFO("Update_Internal: Aggression - AI aggression modification removed if present...");
+                RemoveAIAggression_Internal(companionData);
                 if (DEBUGGING)
                     REX::INFO("-----------------------------------------------------------------------");
             }
@@ -187,7 +242,11 @@ void Update_Internal() {
                     REX::INFO("-----------------------------------------------------------------------");
                 if (DEBUGGING)
                     REX::INFO("Update_Internal: Buff - Buffing companions...");
-                BuffCompanions_Internal();
+                if (BUFF_SET_VALUES) {
+                    BuffCompanionsSetValues_Internal(companionData);
+                } else {
+                    BuffCompanionsMinValues_Internal(companionData);
+                }
                 if (DEBUGGING)
                     REX::INFO("-----------------------------------------------------------------------");
             }
@@ -196,7 +255,7 @@ void Update_Internal() {
                     REX::INFO("-----------------------------------------------------------------------");
                 if (DEBUGGING)
                     REX::INFO("Update_Internal: Perk - Applying perks to companions...");
-                ApplyPerksToCompanions_Internal();
+                ApplyPerksToCompanions_Internal(companionData);
                 if (DEBUGGING)
                     REX::INFO("-----------------------------------------------------------------------");
             }
@@ -205,47 +264,49 @@ void Update_Internal() {
                     REX::INFO("-----------------------------------------------------------------------");
                 if (DEBUGGING)
                     REX::INFO("Update_Internal: Keyword - Applying keywords to companions...");
-                ApplyKeywordsToCompanions_Internal();
+                ApplyKeywordsToCompanions_Internal(companionData);
                 if (DEBUGGING)
                     REX::INFO("-----------------------------------------------------------------------");
             }
             // Loot items by companions if enabled and not in settlement and the player is not in a menu (like container or inventory)
-            if (LOOT_ENABLED && !g_isInSettlement && !IsInventoryMenuOpen_Internal()) {
+            if (LOOT_ENABLED && !g_isInSettlement) {
                 if (DEBUGGING)
                     REX::INFO("-----------------------------------------------------------------------");
                 if (DEBUGGING)
                     REX::INFO("Update_Internal: Loot - Looting items by companions...");
-                auto itemcount = LootItems_Internal();
+                auto itemcount = LootItems_Internal(companionData);
                 if (DEBUGGING)
                     REX::INFO("Update_Internal: Loot - Looted a total of {} objects by companions.", itemcount);
                 if (DEBUGGING)
                     REX::INFO("-----------------------------------------------------------------------");
             }
             // Equip best items for companions
-            if (AI_EQUIP_ITEMS) {
+            if (AI_EQUIP_ARMOR || AI_EQUIP_WEAPON || AI_EQUIP_AMMO_REFILL) {
                 if (DEBUGGING)
                     REX::INFO("-----------------------------------------------------------------------");
-                if (AI_EQUIP_GEAR) {
+                if (AI_EQUIP_ARMOR || AI_EQUIP_WEAPON) {
                     if (DEBUGGING)
                         REX::INFO("Update_Internal: Equip - Equipping best armor and weapons for companions...");
-                    EquipCompanions_Internal();
+                    EquipCompanions_Internal(companionData);
                 }
                 if (AI_EQUIP_AMMO_REFILL) {
                     if (DEBUGGING)
                         REX::INFO("Update_Internal: Equip - Equipping ammunition for companions...");
-                    EquipAmmunition_Internal();
+                    EquipAmmunition_Internal(companionData);
                 }
                 if (DEBUGGING)
                     REX::INFO("-----------------------------------------------------------------------");
             }
-            // Action Companions based on their states
-            if (DEBUGGING)
-                REX::INFO("-----------------------------------------------------------------------");
-            if (DEBUGGING)
-                REX::INFO("Update_Internal: Action - Actioning companions...");
-            ActionCompanions_Internal();
-            if (DEBUGGING)
-                REX::INFO("-----------------------------------------------------------------------");
+            if ((g_isInEncounterZone && !g_isInSettlement) || g_playerInCombat) {
+                // Action Companions based on their states
+                if (DEBUGGING)
+                    REX::INFO("-----------------------------------------------------------------------");
+                if (DEBUGGING)
+                    REX::INFO("Update_Internal: Action - Actioning companions...");
+                ActionCompanions_Internal(companionData);
+                if (DEBUGGING)
+                    REX::INFO("-----------------------------------------------------------------------");
+            }
             if (DEBUGGING)
                 REX::INFO("Update_Internal: -------- Finished main thread work. --------");
             if (DEBUGGING)
@@ -259,15 +320,16 @@ void Update_Internal() {
 }
 
 // Action Companions based on their states
-void ActionCompanions_Internal() {
+void ActionCompanions_Internal(std::vector<TrackedActorData> companionData) {
     if (DEBUGGING)
         REX::INFO("ActionCompanions_Internal: Function called.");
     // Go over our companions
-    auto companionDataCopy = ActorTracking::GetCompanionData();
-    for (auto& companionData : companionDataCopy) {
-        auto* comp = companionData.actor;
+    for (auto& companion : companionData) {
+        auto* comp = companion.actor;
         if (!comp)
             continue;
+        if (IsActorInScene_Internal(comp))
+            continue; // Skip if in a scene
         auto* compInv = comp->inventoryList;
         if (!compInv)
             continue;
@@ -284,7 +346,7 @@ void ActionCompanions_Internal() {
             || CheckActorStatesMatch_Internal(comp, ACTOR_STATE::ESSENTIAL_DOWN, ACTOR_STATE::ANY, ACTOR_STATE::ANY, ACTOR_STATE::ANY)) {
             if (AI_AUTO_REVIVE) {
                 // Attempt to revive the companion
-                if (companionData.usesStimpak) {
+                if (companion.usesStimpak) {
                     auto* invStimpak = ActorAddInventoryItem_Internal(comp, g_itemStimpak, 1);
                     if (DEBUGGING)
                         REX::INFO("ActionCompanions_Internal: Revive - Attempting to auto-revive human companion {} using a stimpak...", comp->GetDisplayFullName());
@@ -339,7 +401,7 @@ void ActionCompanions_Internal() {
             REX::INFO("ActionCompanions_Internal: Logging - Processing companion {} with race {}...", comp->GetDisplayFullName(), comp->race ? comp->race->GetFullName() : "Unknown");
             REX::INFO("ActionCompanions_Internal: Logging - Actor={} runningPkgID=0x{:08X} packageTypeName={}", comp->GetDisplayFullName(), pkgForm ? pkgForm->GetFormID() : 0, pkgForm && pkgForm->GetObjectTypeName());
             if (comp->currentProcess) {
-                REX::INFO("ActionCompanions_Internal: Logging - followTarget==player? {} ; escortingPlayer={}, inCombat={}", (comp->currentProcess->followTarget == player->GetActorHandle()) ? "yes" : "no", comp->currentProcess->escortingPlayer ? "true" : "false", comp->IsInCombat() ? "true" : "false");
+                REX::INFO("ActionCompanions_Internal: Logging - followTarget==player? {} ; escortingPlayer={}, inCombat={}", (comp->currentProcess->followTarget == player->GetActorHandle()) ? "yes" : "no", comp->currentProcess->escortingPlayer ? "true" : "false", companion.isAlerted ? "true" : "false");
             }
             REX::INFO("ActionCompanions_Internal: Logging - The companions velocity is {:.2f} and is currently stuck: {}", ActorTracking::GetActorVelocityFast(comp), ActorTracking::GetActorStuckStatusFast(comp) ? "yes" : "no");
             REX::INFO("ActionCompanions_Internal: Logging - The companion is stuck for {} updates.", ActorTracking::GetActorStuckCounterFast(comp));
@@ -351,14 +413,14 @@ void ActionCompanions_Internal() {
             continue;
         }
         // Stimpak: The companion is in combat or alerted and low on health
-        if (companionData.isAlerted && companionData.healthPercent * 100.0f <= AI_HEALTH_THRESHOLD) {
+        if (companion.isAlerted && companion.healthPercent * 100.0f <= AI_HEALTH_THRESHOLD && AI_USE_STIMPAK_ENABLED) {
             if (DEBUGGING)
-                REX::INFO("ActionCompanions_Internal: Stimpak - Companion {} is alerted and low on health ({:.1f}%), checking for Stimpak or repair kit use...", comp->GetDisplayFullName(), companionData.healthPercent * 100.0f);
-            if (AI_USE_STIMPAK_UNLIMITED || (CheckActorHasItem_Internal(comp, g_itemStimpak) && companionData.usesStimpak) || (CheckActorHasItem_Internal(comp, g_itemRepairKit) && !companionData.usesStimpak)) {
+                REX::INFO("ActionCompanions_Internal: Stimpak - Companion {} is alerted and low on health ({:.1f}%), checking for Stimpak or repair kit use...", comp->GetDisplayFullName(), companion.healthPercent * 100.0f);
+            if (AI_USE_STIMPAK_UNLIMITED || (CheckActorHasItem_Internal(comp, g_itemStimpak) && companion.usesStimpak) || (CheckActorHasItem_Internal(comp, g_itemRepairKit) && !companion.usesStimpak)) {
                 // Remove a Stimpak from the inventory if not set to unlimited
-                if (!AI_USE_STIMPAK_UNLIMITED && companionData.usesStimpak) {
+                if (!AI_USE_STIMPAK_UNLIMITED && companion.usesStimpak) {
                     ActorRemoveInventoryItem_Internal(comp, g_itemStimpak, 1);
-                } else if (!AI_USE_STIMPAK_UNLIMITED && !companionData.usesStimpak) {
+                } else if (!AI_USE_STIMPAK_UNLIMITED && !companion.usesStimpak) {
                     ActorRemoveInventoryItem_Internal(comp, g_itemRepairKit, 1);
                 }
                 // Unlimited Stimpak use
@@ -367,7 +429,7 @@ void ActionCompanions_Internal() {
                 usedStimpak = true;
                 idleToPlay = g_idleStimpak;
                 if (DEBUGGING)
-                    REX::INFO("ActionCompanions_Internal: Stimpak - Companion {} used stimpak or repair kit! Health was at {:.1f}%", comp->GetDisplayFullName(), companionData.healthPercent * 100.0f);
+                    REX::INFO("ActionCompanions_Internal: Stimpak - Companion {} used stimpak or repair kit! Health was at {:.1f}%", comp->GetDisplayFullName(), companion.healthPercent * 100.0f);
             } else {
                 if (AI_FLEE_COMBAT) {
                     fleeCombat = true;
@@ -403,11 +465,11 @@ void ActionCompanions_Internal() {
             }
         }
         // Handle combat target setting
-        if (companionData.isAlerted && COMBAT_ENABLED) {
+        if (companion.isAlerted && COMBAT_ENABLED) {
             if (DEBUGGING)
                 REX::INFO("ActionCompanions_Internal: Combat Target - Setting target for companion {}...", comp->GetDisplayFullName());
             // Set target for the companion if in combat
-            if (companionData.isAlerted) {
+            if (companion.isAlerted) {
                 auto enemyDataCopy = ActorTracking::GetEnemyData();
                 RE::Actor* enemyToTarget = nullptr;
                 switch (COMBAT_TARGET) {
@@ -465,9 +527,11 @@ void ActionCompanions_Internal() {
         // Use Stimpak idle if used
         if (usedStimpak && idleToPlay && !RE::PowerArmor::ActorInPowerArmor(*comp)) {
             // Play Stimpak idle
-            if (comp && comp->currentProcess) {
-                comp->currentProcess->PlayIdle(*comp, idleToPlay, nullptr);
-                continue;
+            if (IsActorRaceHumanoid_Internal(comp)) {
+                if (comp && comp->currentProcess) {
+                    comp->currentProcess->PlayIdle(*comp, idleToPlay, nullptr);
+                    continue;
+                }
             }
         }
         // Flee combat if needed
@@ -481,7 +545,11 @@ void ActionCompanions_Internal() {
                 float fleeToDist = fleeFromDist + static_cast<float>(std::rand()) / RAND_MAX * (maxDist - minDist);
                 // InitiateFlee(TESObjectREFR* a_fleeRef, bool a_runonce, bool a_knows, bool a_combatMode,
                 // TESObjectCELL* a_cell, TESObjectREFR* a_ref, float a_fleeFromDist, float a_fleeToDist)
-                comp->InitiateFlee(comp->currentCombatTarget.get().get(), false, false, true, nullptr, nullptr, fleeFromDist, fleeToDist);
+                auto* fleeTarget = comp->currentCombatTarget.get().get();
+                if (!fleeTarget) {
+                    fleeTarget = player;
+                }
+                comp->InitiateFlee(fleeTarget, false, false, true, nullptr, nullptr, fleeFromDist, fleeToDist);
                 continue;
             }
         }
@@ -495,7 +563,7 @@ void ActionCompanions_Internal() {
             MovementSystem::RemoveCompanionTask(comp);
         }
         // Handle lost behaviour or stuck for more than 1 update (teleport to player)
-        if ((companionData.lost || companionData.distanceToPlayer > AI_STUCK_DISTANCE) && AI_STUCK_CHECK) {
+        if ((companion.lost || companion.distanceToPlayer > AI_STUCK_DISTANCE) && AI_STUCK_CHECK) {
             if (DEBUGGING)
                 REX::INFO("ActionCompanions_Internal: Lost - Companion {} is lost - teleporting to player!", comp->GetDisplayFullName());
             if (player) {
@@ -515,11 +583,17 @@ void ActionCompanions_Internal() {
                 // Find a good Z position
                 newPos.z = player->GetPosition().z; // start with the player's Z
                 // Get collision filter of the companion
-                auto filter = comp->GetCollisionFilter();
+                //auto filter = comp->GetCollisionFilter(); // Crashes in 1.10.984 and 1.11.191
+                // Create default collision filter instead of crashing GetCollisionFilter()
+                RE::CFilter filter;
+                filter.filter = 0x0000002C; // Default character controller collision layer
                 // Get the xy position to a close object (position, filter, radiant steps, scan distance, move up distance)
                 RE::NiPoint3 closePos = GetPointXY_Internal(newPos, filter, 100.0f, 500.0f, 60.0f);
                 // Get ground Z at new position + 1.0f
                 newPos.z = GetPointZ_Internal(newPos, filter, 100.0f, 500.0f) + 1.0f; // Scan 100 units up and 500 units down and add 1.0f to spawn Slightly above ground to pick up new navmesh
+                // Nudge any running idles or stances to stop them
+                if (comp->currentProcess)
+                    comp->currentProcess->StopCurrentIdle(comp, true, true);
                 // Set new position
                 comp->SetPosition(newPos, true);
             }
@@ -575,31 +649,52 @@ void ActorRemoveInventoryItem_Internal(RE::Actor* actor, RE::TESForm* itemForm, 
     auto result = actor->RemoveItem(data);
 }
 
+// Helper function to safely test if aiData is accessible (SEH-protected)
+bool AIAccessTest_Internal(RE::TESNPC* npc) {
+    if (!npc)
+        return false;
+    
+#ifdef _MSC_VER
+    __try {
+        // Test read to verify memory is accessible
+        [[maybe_unused]] volatile auto testRead = npc->aiData.useAggroRadius;
+        return true; // Access succeeded
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false; // Access violation occurred
+    }
+#else
+    // Non-MSVC: assume it's safe (no SEH available)
+    return true;
+#endif
+}
+
 // Helper function to apply the aggression settings to the companions current package
-void ApplyAIAggression_Internal() {
+void ApplyAIAggression_Internal(std::vector<TrackedActorData> companionData) {
     // Go over our companions
-    auto companionDataCopy = ActorTracking::GetCompanionData();
-    for (auto& companionData : companionDataCopy) {
-        auto* actor = companionData.actor;
+    for (auto& companion : companionData) {
+        auto* actor = companion.actor;
         if (!actor)
             continue;
-        if (actor->IsInCombat())
+        if (companion.isAlerted)
             continue; // do not apply when already in combat
         auto* npc = actor->GetNPC();
         if (!npc)
             continue;
+        // Test if aiData is safely accessible
+        if (!AIAccessTest_Internal(npc)) {
+            continue;
+        }
         // Log current aiData settings
         if (npc) {
-            // Disable when sneaking if set in INI
-            if (actor->IsSneaking() && !AI_AGGRESSION_SNEAK) {
-                npc->aiData.useAggroRadius = static_cast<std::uint32_t>(0);
-                continue;
-            }
+            // commented this section as it is not sure the packages can be detected properly
             // Disable when the standard follower package is not running and AI_AGGRESSION_ALL is false
-            if (actor->currentProcess && actor->currentProcess->GetPackageThatIsRunning() && actor->currentProcess->GetPackageThatIsRunning()->GetFormID() != g_packFollowersCompanion->GetFormID() && !AI_AGGRESSION_ALL) {
-                npc->aiData.useAggroRadius = static_cast<std::uint32_t>(0);
-                continue;
-            }
+            //if (actor->currentProcess && actor->currentProcess->GetPackageThatIsRunning() && g_packFollowersCompanion && actor->currentProcess->GetPackageThatIsRunning()->GetFormID() != g_packFollowersCompanion->GetFormID() && !AI_AGGRESSION_ALL) {
+            //    npc->aiData.useAggroRadius = static_cast<std::uint32_t>(0);
+            //    npc->aiData.aggroRadius[0] = static_cast<std::uint16_t>(0);
+            //    npc->aiData.aggroRadius[1] = static_cast<std::uint16_t>(0);
+            //    npc->aiData.aggroRadius[2] = static_cast<std::uint16_t>(0);
+            //    continue;
+            //}
             // Changing settings at runtime if they do not match the INI settings
             if (npc->aiData.useAggroRadius != static_cast<std::uint32_t>(AI_AGGRESSION_ENABLED)
                 || npc->aiData.aggroRadius[0] != static_cast<std::uint16_t>(AI_AGGRESSION_RADIUS0)
@@ -609,21 +704,16 @@ void ApplyAIAggression_Internal() {
                 npc->aiData.aggroRadius[0] = static_cast<std::uint16_t>(AI_AGGRESSION_RADIUS0);
                 npc->aiData.aggroRadius[1] = static_cast<std::uint16_t>(AI_AGGRESSION_RADIUS1);
                 npc->aiData.aggroRadius[2] = static_cast<std::uint16_t>(AI_AGGRESSION_RADIUS2);
-                if (DEBUGGING) {
-                    REX::INFO("ApplyAIAggression: Updated useAggroRadius={} for companion {}", static_cast<std::uint32_t>(npc->aiData.useAggroRadius), actor->GetDisplayFullName());
-                    REX::INFO("ApplyAIAggression: Updated aggroRadius = [{}, {}, {}] for companion {}", npc->aiData.aggroRadius[0], npc->aiData.aggroRadius[1], npc->aiData.aggroRadius[2], actor->GetDisplayFullName());
-                }
             }
         }
     }
 }
 
 // Helper function to apply perks to companion actors
-void ApplyPerksToCompanions_Internal() {
+void ApplyPerksToCompanions_Internal(std::vector<TrackedActorData> companionData) {
     // Go over our companions
-    auto companionDataCopy = ActorTracking::GetCompanionData();
-    for (auto& companionData : companionDataCopy) {
-        auto* actor = companionData.actor;
+    for (auto& companion : companionData) {
+        auto* actor = companion.actor;
         if (!actor)
             continue;
         // Apply each perk from the global list
@@ -637,11 +727,10 @@ void ApplyPerksToCompanions_Internal() {
     }
 }
 
-void ApplyKeywordsToCompanions_Internal() {
+void ApplyKeywordsToCompanions_Internal(std::vector<TrackedActorData> companionData) {
     // Go over our companions
-    auto companionDataCopy = ActorTracking::GetCompanionData();
-    for (auto& companionData : companionDataCopy) {
-        auto* actor = companionData.actor;
+    for (auto& companion : companionData) {
+        auto* actor = companion.actor;
         if (!actor)
             continue;
         // Apply each keyword from the global list
@@ -655,322 +744,581 @@ void ApplyKeywordsToCompanions_Internal() {
     }
 }
 
-
-// Buff companion actors
-void BuffCompanions_Internal() {
+// Buff companion actors checking minimum values
+void BuffCompanionsMinValues_Internal(std::vector<TrackedActorData> companionData) {
     // Go over our companions
-    auto companionDataCopy = ActorTracking::GetCompanionData();
-    for (auto& companionData : companionDataCopy) {
-        auto* actor = companionData.actor;
-        if (!actor || companionData.buffed)
+    for (auto& companion : companionData) {
+        auto* actor = companion.actor;
+        if (!actor)
             continue;
         // Heal Rate buff
-        auto* healRateAV = RE::ActorValue::GetSingleton()->healRateMult;
+        auto* healRateAV = g_actorValueSingleton->healRateMult;
         if (healRateAV) {
             float currentHealRate = actor->GetActorValue(*healRateAV);
             if (currentHealRate < BUFF_HEAL_RATE) {
                 // Calculate exactly how much we need to add to hit the floor
                 float missingAmount = BUFF_HEAL_RATE - currentHealRate;
                 // Add heal rate buff based on BUFF_HEAL_RATE
-                actor->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kPermanent, *healRateAV, missingAmount);
+                actor->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, *healRateAV, missingAmount);
                 currentHealRate = actor->GetActorValue(*healRateAV);
+                if (DEBUGGING)
+                    REX::INFO("BuffCompanions: Heal rate of {} is {:.2f}", actor->GetDisplayFullName(), currentHealRate);
             }
-            if (DEBUGGING)
-                REX::INFO("BuffCompanions: Heal rate of {} is {:.2f}", actor->GetDisplayFullName(), currentHealRate);
         } else {
             if (DEBUGGING)
                 REX::WARN("BuffCompanions: Heal Rate ActorValue not found!");
         }
         // Combat Heal Rate buff
-        auto* combatHealRateAV = RE::ActorValue::GetSingleton()->combatHealthRegenMult;
+        auto* combatHealRateAV = g_actorValueSingleton->combatHealthRegenMult;
         if (combatHealRateAV) {
             float currentCombatHealRate = actor->GetActorValue(*combatHealRateAV);
             if (currentCombatHealRate < BUFF_COMBAT_HEAL_RATE) {
                 // Calculate exactly how much we need to add to hit the floor
                 float missingAmount = BUFF_COMBAT_HEAL_RATE - currentCombatHealRate;
                 // Add combat heal rate buff based on BUFF_COMBAT_HEAL_RATE
-                actor->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kPermanent, *combatHealRateAV, missingAmount);
+                actor->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, *combatHealRateAV, missingAmount);
                 currentCombatHealRate = actor->GetActorValue(*combatHealRateAV);
+                if (DEBUGGING)
+                    REX::INFO("BuffCompanions: Combat heal rate of {} is {:.2f}", actor->GetDisplayFullName(), currentCombatHealRate);
             }
-            if (DEBUGGING)
-                REX::INFO("BuffCompanions: Combat heal rate of {} is {:.2f}", actor->GetDisplayFullName(), currentCombatHealRate);
         } else {
             if (DEBUGGING)
                 REX::WARN("BuffCompanions: Combat Heal Rate ActorValue not found!");
         }
         // Damage Resist buff
-        auto* dmgResistAV = RE::ActorValue::GetSingleton()->damageResistance;
+        auto* dmgResistAV = g_actorValueSingleton->damageResistance;
         if (dmgResistAV) {
             float currentDmgResist = actor->GetActorValue(*dmgResistAV);
             if (currentDmgResist < BUFF_DAMAGE_RESIST) {
                 // Calculate exactly how much we need to add to hit the floor
                 float missingAmount = BUFF_DAMAGE_RESIST - currentDmgResist;
                 // Add damage resistance buff based on BUFF_DAMAGE_RESIST
-                actor->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kPermanent, *dmgResistAV, missingAmount);
+                actor->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, *dmgResistAV, missingAmount);
                 currentDmgResist = actor->GetActorValue(*dmgResistAV);
+                if (DEBUGGING)
+                    REX::INFO("BuffCompanions: Damage resistance of {} is {:.2f}", actor->GetDisplayFullName(), currentDmgResist);
             }
-            if (DEBUGGING)
-                REX::INFO("BuffCompanions: Damage resistance of {} is {:.2f}", actor->GetDisplayFullName(), currentDmgResist);
         } else {
             if (DEBUGGING)
                 REX::WARN("BuffCompanions: Damage Resistance ActorValue not found!");
         }
         // Fire Resist buff
-        auto* fireResistAV = RE::ActorValue::GetSingleton()->fireResistance;
+        auto* fireResistAV = g_actorValueSingleton->fireResistance;
         if (fireResistAV) {
             float currentFireResist = actor->GetActorValue(*fireResistAV);
             if (currentFireResist < BUFF_FIRE_RESIST) {
                 // Calculate exactly how much we need to add to hit the floor
                 float missingAmount = BUFF_FIRE_RESIST - currentFireResist;
                 // Add fire resistance buff based on BUFF_FIRE_RESIST
-                actor->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kPermanent, *fireResistAV, missingAmount);
+                actor->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, *fireResistAV, missingAmount);
                 currentFireResist = actor->GetActorValue(*fireResistAV);
+                if (DEBUGGING)
+                    REX::INFO("BuffCompanions: Fire resistance of {} is {:.2f}", actor->GetDisplayFullName(), currentFireResist);
             }
-            if (DEBUGGING)
-                REX::INFO("BuffCompanions: Fire resistance of {} is {:.2f}", actor->GetDisplayFullName(), currentFireResist);
         } else {
             if (DEBUGGING)
                 REX::WARN("BuffCompanions: Fire Resistance ActorValue not found!");
         }
         // Electrical Resist buff
-        auto* electricalResistAV = RE::ActorValue::GetSingleton()->electricalResistance;
+        auto* electricalResistAV = g_actorValueSingleton->electricalResistance;
         if (electricalResistAV) {
             float currentElectricalResist = actor->GetActorValue(*electricalResistAV);
             if (currentElectricalResist < BUFF_ELECTRICAL_RESIST) {
                 // Calculate exactly how much we need to add to hit the floor
                 float missingAmount = BUFF_ELECTRICAL_RESIST - currentElectricalResist;
                 // Add electrical resistance buff based on BUFF_ELECTRICAL_RESIST
-                actor->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kPermanent, *electricalResistAV, missingAmount);
+                actor->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, *electricalResistAV, missingAmount);
                 currentElectricalResist = actor->GetActorValue(*electricalResistAV);
+                if (DEBUGGING)
+                    REX::INFO("BuffCompanions: Electrical resistance of {} is {:.2f}", actor->GetDisplayFullName(), currentElectricalResist);
             }
-            if (DEBUGGING)
-                REX::INFO("BuffCompanions: Electrical resistance of {} is {:.2f}", actor->GetDisplayFullName(), currentElectricalResist);
         } else {
             if (DEBUGGING)
                 REX::WARN("BuffCompanions: Electrical Resistance ActorValue not found!");
         }
         // Frost Resist buff
-        auto* frostResistAV = RE::ActorValue::GetSingleton()->frostResistance;
+        auto* frostResistAV = g_actorValueSingleton->frostResistance;
         if (frostResistAV) {
             float currentFrostResist = actor->GetActorValue(*frostResistAV);
             if (currentFrostResist < BUFF_FROST_RESIST) {
                 // Calculate exactly how much we need to add to hit the floor
                 float missingAmount = BUFF_FROST_RESIST - currentFrostResist;
                 // Add frost resistance buff based on BUFF_FROST_RESIST
-                actor->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kPermanent, *frostResistAV, missingAmount);
+                actor->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, *frostResistAV, missingAmount);
                 currentFrostResist = actor->GetActorValue(*frostResistAV);
+                if (DEBUGGING)
+                    REX::INFO("BuffCompanions: Frost resistance of {} is {:.2f}", actor->GetDisplayFullName(), currentFrostResist);
             }
-            if (DEBUGGING)
-                REX::INFO("BuffCompanions: Frost resistance of {} is {:.2f}", actor->GetDisplayFullName(), currentFrostResist);
         } else {
             if (DEBUGGING)
                 REX::WARN("BuffCompanions: Frost Resistance ActorValue not found!");
         }
         // Energy Resist buff
-        auto* energyResistAV = RE::ActorValue::GetSingleton()->energyResistance;
+        auto* energyResistAV = g_actorValueSingleton->energyResistance;
         if (energyResistAV) {
             float currentEnergyResist = actor->GetActorValue(*energyResistAV);
             if (currentEnergyResist < BUFF_ENERGY_RESIST) {
                 // Calculate exactly how much we need to add to hit the floor
                 float missingAmount = BUFF_ENERGY_RESIST - currentEnergyResist;
                 // Add energy resistance buff based on BUFF_ENERGY_RESIST
-                actor->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kPermanent, *energyResistAV, missingAmount);
+                actor->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, *energyResistAV, missingAmount);
                 currentEnergyResist = actor->GetActorValue(*energyResistAV);
+                if (DEBUGGING)
+                    REX::INFO("BuffCompanions: Energy resistance of {} is {:.2f}", actor->GetDisplayFullName(), currentEnergyResist);
             }
-            if (DEBUGGING)
-                REX::INFO("BuffCompanions: Energy resistance of {} is {:.2f}", actor->GetDisplayFullName(), currentEnergyResist);
         } else {
             if (DEBUGGING)
                 REX::WARN("BuffCompanions: Energy Resistance ActorValue not found!");
         }
         // Poison Resist buff
-        auto* poisonResistAV = RE::ActorValue::GetSingleton()->poisonResistance;
+        auto* poisonResistAV = g_actorValueSingleton->poisonResistance;
         if (poisonResistAV) {
             float currentPoisonResist = actor->GetActorValue(*poisonResistAV);
             if (currentPoisonResist < BUFF_POISON_RESIST) {
                 // Calculate exactly how much we need to add to hit the floor
                 float missingAmount = BUFF_POISON_RESIST - currentPoisonResist;
                 // Add poison resistance buff based on BUFF_POISON_RESIST
-                actor->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kPermanent, *poisonResistAV, missingAmount);
+                actor->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, *poisonResistAV, missingAmount);
                 currentPoisonResist = actor->GetActorValue(*poisonResistAV);
+                if (DEBUGGING)
+                    REX::INFO("BuffCompanions: Poison resistance of {} is {:.2f}", actor->GetDisplayFullName(), currentPoisonResist);
             }
-            if (DEBUGGING)
-                REX::INFO("BuffCompanions: Poison resistance of {} is {:.2f}", actor->GetDisplayFullName(), currentPoisonResist);
         } else {
             if (DEBUGGING)
                 REX::WARN("BuffCompanions: Poison Resistance ActorValue not found!");
         }
         // Radiation Exposure Resist buff
-        auto* radiationResistAV = RE::ActorValue::GetSingleton()->radExposureResistance;
+        auto* radiationResistAV = g_actorValueSingleton->radExposureResistance;
         if (radiationResistAV) {
             float currentRadiationResist = actor->GetActorValue(*radiationResistAV);
             if (currentRadiationResist < BUFF_RADIATION_RESIST) {
                 // Calculate exactly how much we need to add to hit the floor
                 float missingAmount = BUFF_RADIATION_RESIST - currentRadiationResist;
                 // Add radiation exposure resistance buff based on BUFF_RADIATION_RESIST
-                actor->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kPermanent, *radiationResistAV, missingAmount);
+                actor->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, *radiationResistAV, missingAmount);
                 currentRadiationResist = actor->GetActorValue(*radiationResistAV);
+                if (DEBUGGING)
+                    REX::INFO("BuffCompanions: Radiation exposure resistance of {} is {:.2f}", actor->GetDisplayFullName(), currentRadiationResist);
             }
-            if (DEBUGGING)
-                REX::INFO("BuffCompanions: Radiation exposure resistance of {} is {:.2f}", actor->GetDisplayFullName(), currentRadiationResist);
         } else {
             if (DEBUGGING)
                 REX::WARN("BuffCompanions: Radiation Exposure Resistance ActorValue not found!");
         }
         // Agility buff
-        auto* agilityAV = RE::ActorValue::GetSingleton()->agility;
+        auto* agilityAV = g_actorValueSingleton->agility;
         if (agilityAV) {
             float currentAgility = actor->GetActorValue(*agilityAV);
             if (currentAgility < BUFF_AGILITY) {
                 // Calculate exactly how much we need to add to hit the floor
                 float missingAmount = BUFF_AGILITY - currentAgility;
                 // Add agility buff based on BUFF_AGILITY
-                actor->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kPermanent, *agilityAV, missingAmount);
+                actor->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, *agilityAV, missingAmount);
                 currentAgility = actor->GetActorValue(*agilityAV);
+                if (DEBUGGING)
+                    REX::INFO("BuffCompanions: Agility of {} is {:.2f}", actor->GetDisplayFullName(), currentAgility);
             }
-            if (DEBUGGING)
-                REX::INFO("BuffCompanions: Agility of {} is {:.2f}", actor->GetDisplayFullName(), currentAgility);
         } else {
             if (DEBUGGING)
                 REX::WARN("BuffCompanions: Agility ActorValue not found!");
         }
         // Endurance buff
-        auto* enduranceAV = RE::ActorValue::GetSingleton()->endurance;
+        auto* enduranceAV = g_actorValueSingleton->endurance;
         if (enduranceAV) {
             float currentEndurance = actor->GetActorValue(*enduranceAV);
             if (currentEndurance < BUFF_ENDURANCE) {
                 // Calculate exactly how much we need to add to hit the floor
                 float missingAmount = BUFF_ENDURANCE - currentEndurance;
                 // Add endurance buff based on BUFF_ENDURANCE
-                actor->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kPermanent, *enduranceAV, missingAmount);
+                actor->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, *enduranceAV, missingAmount);
                 currentEndurance = actor->GetActorValue(*enduranceAV);
+                if (DEBUGGING)
+                    REX::INFO("BuffCompanions: Endurance of {} is {:.2f}", actor->GetDisplayFullName(), currentEndurance);
             }
-            if (DEBUGGING)
-                REX::INFO("BuffCompanions: Endurance of {} is {:.2f}", actor->GetDisplayFullName(), currentEndurance);
         } else {
             if (DEBUGGING)
                 REX::WARN("BuffCompanions: Endurance ActorValue not found!");
         }
         // Intelligence buff
-        auto* intelligenceAV = RE::ActorValue::GetSingleton()->intelligence;
+        auto* intelligenceAV = g_actorValueSingleton->intelligence;
         if (intelligenceAV) {
             float currentIntelligence = actor->GetActorValue(*intelligenceAV);
             if (currentIntelligence < BUFF_INTELLIGENCE) {
                 // Calculate exactly how much we need to add to hit the floor
                 float missingAmount = BUFF_INTELLIGENCE - currentIntelligence;
                 // Add intelligence buff based on BUFF_INTELLIGENCE
-                actor->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kPermanent, *intelligenceAV, missingAmount);
+                actor->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, *intelligenceAV, missingAmount);
                 currentIntelligence = actor->GetActorValue(*intelligenceAV);
+                if (DEBUGGING)
+                    REX::INFO("BuffCompanions: Intelligence of {} is {:.2f}", actor->GetDisplayFullName(), currentIntelligence);
             }
-            if (DEBUGGING)
-                REX::INFO("BuffCompanions: Intelligence of {} is {:.2f}", actor->GetDisplayFullName(), currentIntelligence);
         } else {
             if (DEBUGGING)
                 REX::WARN("BuffCompanions: Intelligence ActorValue not found!");
         }
         // Lockpick buff
-        auto* lockpickAV = RE::ActorValue::GetSingleton()->lockpicking;
+        auto* lockpickAV = g_actorValueSingleton->lockpicking;
         if (lockpickAV) {
             float currentLockpick = actor->GetActorValue(*lockpickAV);
             if (currentLockpick < BUFF_LOCKPICK) {
                 // Calculate exactly how much we need to add to hit the floor
                 float missingAmount = BUFF_LOCKPICK - currentLockpick;
                 // Add lockpick buff based on BUFF_LOCKPICK
-                actor->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kPermanent, *lockpickAV, missingAmount);
+                actor->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, *lockpickAV, missingAmount);
                 currentLockpick = actor->GetActorValue(*lockpickAV);
+                if (DEBUGGING)
+                    REX::INFO("BuffCompanions: Lockpick of {} is {:.2f}", actor->GetDisplayFullName(), currentLockpick);
             }
-            if (DEBUGGING)
-                REX::INFO("BuffCompanions: Lockpick of {} is {:.2f}", actor->GetDisplayFullName(), currentLockpick);
         } else {
             if (DEBUGGING)
                 REX::WARN("BuffCompanions: Lockpick ActorValue not found!");
         }
         // Luck buff
-        auto* luckAV = RE::ActorValue::GetSingleton()->luck;
+        auto* luckAV = g_actorValueSingleton->luck;
         if (luckAV) {
             float currentLuck = actor->GetActorValue(*luckAV);
             if (currentLuck < BUFF_LUCK) {
                 // Calculate exactly how much we need to add to hit the floor
                 float missingAmount = BUFF_LUCK - currentLuck;
                 // Add luck buff based on BUFF_LUCK
-                actor->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kPermanent, *luckAV, missingAmount);
+                actor->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, *luckAV, missingAmount);
                 currentLuck = actor->GetActorValue(*luckAV);
+                if (DEBUGGING)
+                    REX::INFO("BuffCompanions: Luck of {} is {:.2f}", actor->GetDisplayFullName(), currentLuck);
             }
-            if (DEBUGGING)
-                REX::INFO("BuffCompanions: Luck of {} is {:.2f}", actor->GetDisplayFullName(), currentLuck);
         } else {
             if (DEBUGGING)
                 REX::WARN("BuffCompanions: Luck ActorValue not found!");
         }
         // Perception buff
-        auto* perceptionAV = RE::ActorValue::GetSingleton()->perception;
+        auto* perceptionAV = g_actorValueSingleton->perception;
         if (perceptionAV) {
             float currentPerception = actor->GetActorValue(*perceptionAV);
             if (currentPerception < BUFF_PERCEPTION) {
                 // Calculate exactly how much we need to add to hit the floor
                 float missingAmount = BUFF_PERCEPTION - currentPerception;
                 // Add perception buff based on BUFF_PERCEPTION
-                actor->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kPermanent, *perceptionAV, missingAmount);
+                actor->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, *perceptionAV, missingAmount);
                 currentPerception = actor->GetActorValue(*perceptionAV);
+                if (DEBUGGING)
+                    REX::INFO("BuffCompanions: Perception of {} is {:.2f}", actor->GetDisplayFullName(), currentPerception);
             }
-            if (DEBUGGING)
-                REX::INFO("BuffCompanions: Perception of {} is {:.2f}", actor->GetDisplayFullName(), currentPerception);
         } else {
             if (DEBUGGING)
                 REX::WARN("BuffCompanions: Perception ActorValue not found!");
         }
         // Sneak buff
-        auto* sneakAV = RE::ActorValue::GetSingleton()->sneak;
+        auto* sneakAV = g_actorValueSingleton->sneak;
         if (sneakAV) {
             float currentSneak = actor->GetActorValue(*sneakAV);
             if (currentSneak < BUFF_SNEAK) {
                 // Calculate exactly how much we need to add to hit the floor
                 float missingAmount = BUFF_SNEAK - currentSneak;
                 // Add sneak buff based on BUFF_SNEAK
-                actor->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kPermanent, *sneakAV, missingAmount);
+                actor->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, *sneakAV, missingAmount);
                 currentSneak = actor->GetActorValue(*sneakAV);
+                if (DEBUGGING)
+                    REX::INFO("BuffCompanions: Sneak of {} is {:.2f}", actor->GetDisplayFullName(), currentSneak);
             }
-            if (DEBUGGING)
-                REX::INFO("BuffCompanions: Sneak of {} is {:.2f}", actor->GetDisplayFullName(), currentSneak);
         } else {
             if (DEBUGGING)
                 REX::WARN("BuffCompanions: Sneak ActorValue not found!");
         }
         // Strength buff
-        auto* strengthAV = RE::ActorValue::GetSingleton()->strength;
+        auto* strengthAV = g_actorValueSingleton->strength;
         if (strengthAV) {
             float currentStrength = actor->GetActorValue(*strengthAV);
             if (currentStrength < BUFF_STRENGTH) {
                 // Calculate exactly how much we need to add to hit the floor
                 float missingAmount = BUFF_STRENGTH - currentStrength;
                 // Add strength buff based on BUFF_STRENGTH
-                actor->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kPermanent, *strengthAV, missingAmount);
+                actor->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, *strengthAV, missingAmount);
                 currentStrength = actor->GetActorValue(*strengthAV);
+                if (DEBUGGING)
+                    REX::INFO("BuffCompanions: Strength of {} is {:.2f}", actor->GetDisplayFullName(), currentStrength);
             }
-            if (DEBUGGING)
-                REX::INFO("BuffCompanions: Strength of {} is {:.2f}", actor->GetDisplayFullName(), currentStrength);
         } else {
             if (DEBUGGING)
                 REX::WARN("BuffCompanions: Strength ActorValue not found!");
         }
         // Carry weight buff
-        auto* carryWeightAV = RE::ActorValue::GetSingleton()->carryWeight;
+        auto* carryWeightAV = g_actorValueSingleton->carryWeight;
         if (carryWeightAV) {
             float currentCarryWeight = actor->GetActorValue(*carryWeightAV);
             if (currentCarryWeight < BUFF_CARRYWEIGHT) {
                 // Calculate exactly how much we need to add to hit the floor
                 float missingAmount = BUFF_CARRYWEIGHT - currentCarryWeight;
                 // Add carry weight buff based on BUFF_CARRYWEIGHT
-                actor->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kPermanent, *carryWeightAV, missingAmount);
+                actor->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, *carryWeightAV, missingAmount);
                 currentCarryWeight = actor->GetActorValue(*carryWeightAV);
+                if (DEBUGGING)
+                    REX::INFO("BuffCompanions: Carry Weight of {} is {:.2f}", actor->GetDisplayFullName(), currentCarryWeight);
             }
-            if (DEBUGGING)
-                REX::INFO("BuffCompanions: Carry Weight of {} is {:.2f}", actor->GetDisplayFullName(), currentCarryWeight);
         } else {
             if (DEBUGGING)
                 REX::WARN("BuffCompanions: Carry Weight ActorValue not found!");
         }
-        companionData.buffed = true;
+    }
+}
+
+// Buff companion actors checking minimum values
+void BuffCompanionsSetValues_Internal(std::vector<TrackedActorData> companionData) {
+    // Go over our companions
+    for (auto& companion : companionData) {
+        auto* actor = companion.actor;
+        if (!actor)
+            continue;
+        // Heal Rate buff
+        auto* healRateAV = g_actorValueSingleton->healRateMult;
+        if (healRateAV) {
+            float currentHealRate = actor->GetActorValue(*healRateAV);
+            float delta = BUFF_HEAL_RATE - currentHealRate;
+            if (delta != 0.0f) {
+                actor->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, *healRateAV, delta);
+            }
+            if (DEBUGGING)
+                REX::INFO("BuffCompanions: Heal rate of {} is {:.2f}", actor->GetDisplayFullName(), BUFF_HEAL_RATE);
+        } else {
+            if (DEBUGGING)
+                REX::WARN("BuffCompanions: Heal Rate ActorValue not found!");
+        }
+        // Combat Heal Rate buff
+        auto* combatHealRateAV = g_actorValueSingleton->combatHealthRegenMult;
+        if (combatHealRateAV) {
+            float currentCombatHealRate = actor->GetActorValue(*combatHealRateAV);
+            float delta = BUFF_COMBAT_HEAL_RATE - currentCombatHealRate;
+            if (delta != 0.0f) {
+                actor->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, *combatHealRateAV, delta);
+            }
+            if (DEBUGGING)
+                REX::INFO("BuffCompanions: Combat heal rate of {} is {:.2f}", actor->GetDisplayFullName(), BUFF_COMBAT_HEAL_RATE);
+        } else {
+            if (DEBUGGING)
+                REX::WARN("BuffCompanions: Combat Heal Rate ActorValue not found!");
+        }
+        // Damage Resist buff
+        auto* dmgResistAV = g_actorValueSingleton->damageResistance;
+        if (dmgResistAV) {
+            float currentDmgResist = actor->GetActorValue(*dmgResistAV);
+            float delta = BUFF_DAMAGE_RESIST - currentDmgResist;
+            if (delta != 0.0f) {
+                actor->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, *dmgResistAV, delta);
+            }
+            if (DEBUGGING)
+                REX::INFO("BuffCompanions: Damage resistance of {} is {:.2f}", actor->GetDisplayFullName(), BUFF_DAMAGE_RESIST);
+        } else {
+            if (DEBUGGING)
+                REX::WARN("BuffCompanions: Damage Resistance ActorValue not found!");
+        }
+        // Fire Resist buff
+        auto* fireResistAV = g_actorValueSingleton->fireResistance;
+        if (fireResistAV) {
+            float currentFireResist = actor->GetActorValue(*fireResistAV);
+            float delta = BUFF_FIRE_RESIST - currentFireResist;
+            if (delta != 0.0f) {
+                actor->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, *fireResistAV, delta);
+            }
+            if (DEBUGGING)
+                REX::INFO("BuffCompanions: Fire resistance of {} is {:.2f}", actor->GetDisplayFullName(), BUFF_FIRE_RESIST);
+        } else {
+            if (DEBUGGING)
+                REX::WARN("BuffCompanions: Fire Resistance ActorValue not found!");
+        }
+        // Electrical Resist buff
+        auto* electricalResistAV = g_actorValueSingleton->electricalResistance;
+        if (electricalResistAV) {
+            float currentElectricalResist = actor->GetActorValue(*electricalResistAV);
+            float delta = BUFF_ELECTRICAL_RESIST - currentElectricalResist;
+            if (delta != 0.0f) {
+                actor->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, *electricalResistAV, delta);
+            }
+            if (DEBUGGING)
+                REX::INFO("BuffCompanions: Electrical resistance of {} is {:.2f}", actor->GetDisplayFullName(), BUFF_ELECTRICAL_RESIST);
+        } else {
+            if (DEBUGGING)
+                REX::WARN("BuffCompanions: Electrical Resistance ActorValue not found!");
+        }
+        // Frost Resist buff
+        auto* frostResistAV = g_actorValueSingleton->frostResistance;
+        if (frostResistAV) {
+            float currentFrostResist = actor->GetActorValue(*frostResistAV);
+            float delta = BUFF_FROST_RESIST - currentFrostResist;
+            if (delta != 0.0f) {
+                actor->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, *frostResistAV, delta);
+            }
+            if (DEBUGGING)
+                REX::INFO("BuffCompanions: Frost resistance of {} is {:.2f}", actor->GetDisplayFullName(), BUFF_FROST_RESIST);
+        } else {
+            if (DEBUGGING)
+                REX::WARN("BuffCompanions: Frost Resistance ActorValue not found!");
+        }
+        // Energy Resist buff
+        auto* energyResistAV = g_actorValueSingleton->energyResistance;
+        if (energyResistAV) {
+            float currentEnergyResist = actor->GetActorValue(*energyResistAV);
+            float delta = BUFF_ENERGY_RESIST - currentEnergyResist;
+            if (delta != 0.0f) {
+                actor->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, *energyResistAV, delta);
+            }
+            if (DEBUGGING)
+                REX::INFO("BuffCompanions: Energy resistance of {} is {:.2f}", actor->GetDisplayFullName(), BUFF_ENERGY_RESIST);
+        } else {
+            if (DEBUGGING)
+                REX::WARN("BuffCompanions: Energy Resistance ActorValue not found!");
+        }
+        // Poison Resist buff
+        auto* poisonResistAV = g_actorValueSingleton->poisonResistance;
+        if (poisonResistAV) {
+            float currentPoisonResist = actor->GetActorValue(*poisonResistAV);
+            float delta = BUFF_POISON_RESIST - currentPoisonResist;
+            if (delta != 0.0f) {
+                actor->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, *poisonResistAV, delta);
+            }
+            if (DEBUGGING)
+                REX::INFO("BuffCompanions: Poison resistance of {} is {:.2f}", actor->GetDisplayFullName(), BUFF_POISON_RESIST);
+        } else {
+            if (DEBUGGING)
+                REX::WARN("BuffCompanions: Poison Resistance ActorValue not found!");
+        }
+        // Radiation Exposure Resist buff
+        auto* radiationResistAV = g_actorValueSingleton->radExposureResistance;
+        if (radiationResistAV) {
+            float currentRadiationResist = actor->GetActorValue(*radiationResistAV);
+            float delta = BUFF_RADIATION_RESIST - currentRadiationResist;
+            if (delta != 0.0f) {
+                actor->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, *radiationResistAV, delta);
+            }
+            if (DEBUGGING)
+                REX::INFO("BuffCompanions: Radiation exposure resistance of {} is {:.2f}", actor->GetDisplayFullName(), BUFF_RADIATION_RESIST);
+        } else {
+            if (DEBUGGING)
+                REX::WARN("BuffCompanions: Radiation Exposure Resistance ActorValue not found!");
+        }
+        // Agility buff
+        auto* agilityAV = g_actorValueSingleton->agility;
+        if (agilityAV) {
+            float currentAgility = actor->GetActorValue(*agilityAV);
+            float delta = BUFF_AGILITY - currentAgility;
+            if (delta != 0.0f) {
+                actor->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, *agilityAV, delta);
+            }
+            if (DEBUGGING)
+                REX::INFO("BuffCompanions: Agility of {} is {:.2f}", actor->GetDisplayFullName(), BUFF_AGILITY);
+        } else {
+            if (DEBUGGING)
+                REX::WARN("BuffCompanions: Agility ActorValue not found!");
+        }
+        // Endurance buff
+        auto* enduranceAV = g_actorValueSingleton->endurance;
+        if (enduranceAV) {
+            float currentEndurance = actor->GetActorValue(*enduranceAV);
+            float delta = BUFF_ENDURANCE - currentEndurance;
+            if (delta != 0.0f) {
+                actor->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, *enduranceAV, delta);
+            }
+            if (DEBUGGING)
+                REX::INFO("BuffCompanions: Endurance of {} is {:.2f}", actor->GetDisplayFullName(), BUFF_ENDURANCE);
+        } else {
+            if (DEBUGGING)
+                REX::WARN("BuffCompanions: Endurance ActorValue not found!");
+        }
+        // Intelligence buff
+        auto* intelligenceAV = g_actorValueSingleton->intelligence;
+        if (intelligenceAV) {
+            float currentIntelligence = actor->GetActorValue(*intelligenceAV);
+            float delta = BUFF_INTELLIGENCE - currentIntelligence;
+            if (delta != 0.0f) {
+                actor->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, *intelligenceAV, delta);
+            }
+            if (DEBUGGING)
+                REX::INFO("BuffCompanions: Intelligence of {} is {:.2f}", actor->GetDisplayFullName(), BUFF_INTELLIGENCE);
+        } else {
+            if (DEBUGGING)
+                REX::WARN("BuffCompanions: Intelligence ActorValue not found!");
+        }
+        // Lockpick buff
+        auto* lockpickAV = g_actorValueSingleton->lockpicking;
+        if (lockpickAV) {
+            float currentLockpick = actor->GetActorValue(*lockpickAV);
+            float delta = BUFF_LOCKPICK - currentLockpick;
+            if (delta != 0.0f) {
+                actor->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, *lockpickAV, delta);
+            }
+            if (DEBUGGING)
+                REX::INFO("BuffCompanions: Lockpick of {} is {:.2f}", actor->GetDisplayFullName(), BUFF_LOCKPICK);
+        } else {
+            if (DEBUGGING)
+                REX::WARN("BuffCompanions: Lockpick ActorValue not found!");
+        }
+        // Luck buff
+        auto* luckAV = g_actorValueSingleton->luck;
+        if (luckAV) {
+            float currentLuck = actor->GetActorValue(*luckAV);
+            float delta = BUFF_LUCK - currentLuck;
+            if (delta != 0.0f) {
+                actor->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, *luckAV, delta);
+            }
+            if (DEBUGGING)
+                REX::INFO("BuffCompanions: Luck of {} is {:.2f}", actor->GetDisplayFullName(), BUFF_LUCK);
+        } else {
+            if (DEBUGGING)
+                REX::WARN("BuffCompanions: Luck ActorValue not found!");
+        }
+        // Perception buff
+        auto* perceptionAV = g_actorValueSingleton->perception;
+        if (perceptionAV) {
+            float currentPerception = actor->GetActorValue(*perceptionAV);
+            float delta = BUFF_PERCEPTION - currentPerception;
+            if (delta != 0.0f) {
+                actor->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, *perceptionAV, delta);
+            }
+            if (DEBUGGING)
+                REX::INFO("BuffCompanions: Perception of {} is {:.2f}", actor->GetDisplayFullName(), BUFF_PERCEPTION);
+        } else {
+            if (DEBUGGING)
+                REX::WARN("BuffCompanions: Perception ActorValue not found!");
+        }
+        // Sneak buff
+        auto* sneakAV = g_actorValueSingleton->sneak;
+        if (sneakAV) {
+            float currentSneak = actor->GetActorValue(*sneakAV);
+            float delta = BUFF_SNEAK - currentSneak;
+            if (delta != 0.0f) {
+                actor->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, *sneakAV, delta);
+            }
+            if (DEBUGGING)
+                REX::INFO("BuffCompanions: Sneak of {} is {:.2f}", actor->GetDisplayFullName(), BUFF_SNEAK);
+        } else {
+            if (DEBUGGING)
+                REX::WARN("BuffCompanions: Sneak ActorValue not found!");
+        }
+        // Strength buff
+        auto* strengthAV = g_actorValueSingleton->strength;
+        if (strengthAV) {
+            float currentStrength = actor->GetActorValue(*strengthAV);
+            float delta = BUFF_STRENGTH - currentStrength;
+            if (delta != 0.0f) {
+                actor->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, *strengthAV, delta);
+            }
+            if (DEBUGGING)
+                REX::INFO("BuffCompanions: Strength of {} is {:.2f}", actor->GetDisplayFullName(), BUFF_STRENGTH);
+        } else {
+            if (DEBUGGING)
+                REX::WARN("BuffCompanions: Strength ActorValue not found!");
+        }
+        // Carry weight buff
+        auto* carryWeightAV = g_actorValueSingleton->carryWeight;
+        if (carryWeightAV) {
+            float currentCarryWeight = actor->GetActorValue(*carryWeightAV);
+            float delta = BUFF_CARRYWEIGHT - currentCarryWeight;
+            if (delta != 0.0f) {
+                actor->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, *carryWeightAV, delta);
+            }
+            if (DEBUGGING)
+                REX::INFO("BuffCompanions: Carry Weight of {} is {:.2f}", actor->GetDisplayFullName(), BUFF_CARRYWEIGHT);
+        } else {
+            if (DEBUGGING)
+                REX::WARN("BuffCompanions: Carry Weight ActorValue not found!");
+        }
     }
 }
 
@@ -1024,6 +1372,49 @@ bool CheckActorStatesMatch_Internal(RE::Actor* actor, std::uint32_t lifeStateFil
 }
 
 // Helper to check if the current cell is a settlement
+bool CheckIsCurrentCellEncounterZone_Internal() {
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    if (!player || !player->parentCell)
+        return false;
+    auto* cell = player->parentCell;
+    if (!cell)
+        return false;
+    // Get location from cell (can be by extradata or through encounter zone)
+    auto* extraData = cell->extraList.get();
+    RE::BGSEncounterZone* encounterZone = cell->GetEncounterZone();
+    RE::BGSLocation* location = nullptr;
+    if (!encounterZone && extraData) {
+        auto* extraLocation = extraData->GetByType<RE::ExtraLocation>();
+        if (extraLocation) {
+            encounterZone = extraLocation->location->As<RE::BGSEncounterZone>();
+            location = extraLocation->location;
+        }
+    } else if (encounterZone) {
+        location = encounterZone->data.location;
+    } else {
+        return true; // No encounter zone means open world, thus encounter zone
+    }
+    // If no location found, should be open world and assume encounter zone
+    if (!location) {
+        return true;
+    }
+    // We should reach here for most cells
+    // Initialize as not encounterzone as fail-safe for locations without keywords that are not settlements
+    bool isEncounterzone = false;
+    auto* locationEditorID = location->GetFormEditorID();
+    // Check for any Encounter keywords, this means enemies can spawn here
+    if (location->ContainsKeywordString("locenc") || location->ContainsKeywordString("LocEnc")) {
+        isEncounterzone = true;
+    }
+    // Check if the location EditorID contains "MQ" (main quest locations are not considered encounter zones)
+    if (locationEditorID && std::strstr(locationEditorID, "MQ") != nullptr) {
+        isEncounterzone = false;
+    }
+    // Return result
+    return isEncounterzone;
+}
+
+// Helper to check if the current cell is a settlement
 bool CheckIsCurrentCellSettlement_Internal() {
     auto* player = RE::PlayerCharacter::GetSingleton();
     if (!player || !player->parentCell)
@@ -1041,7 +1432,6 @@ TrackedActorData CreateTrackedData_Internal(RE::Actor* actor, ENEMY_TIER tier) {
     TrackedActorData data{};
     data.actor = actor;
     data.tier = tier;
-    data.aiUpdated = false;
     data.lastUpdate = std::chrono::steady_clock::now();
     if (!actor)
         return data;
@@ -1054,7 +1444,7 @@ TrackedActorData CreateTrackedData_Internal(RE::Actor* actor, ENEMY_TIER tier) {
     data.gunState = states.gunState;
     data.interactingState = states.interactingState;
     // Health
-    auto* health = RE::ActorValue::GetSingleton()->health;
+    auto* health = g_actorValueSingleton->health;
     if (health) {
         float currentHealth = actor->GetActorValue(*health);
         data.maxHealth = actor->GetPermanentActorValue(*health);
@@ -1081,8 +1471,13 @@ EnemyAnalysis EnemyActorAnalyze_Internal(RE::Actor* actor) {
     if (!npc)
         return analysis;
     // Get actor's current/max health
-    float currentHealth = actor->GetActorValue(*RE::ActorValue::GetSingleton()->health);
-    float maxHealth = actor->GetPermanentActorValue(*RE::ActorValue::GetSingleton()->health);
+    float currentHealth = 0.0f;
+    float maxHealth = 0.0f;
+    auto* healthAV = g_actorValueSingleton->health;
+    if (healthAV) {
+        currentHealth = actor->GetActorValue(*healthAV);
+        maxHealth = actor->GetPermanentActorValue(*healthAV);
+    }
     // Calculate health percentage relative to strongest enemy
     analysis.healthPercentOfMax = (maxHealth > 0.0f) ? (currentHealth / g_enemyMaxHealthInCell.load()) : 0.0f;
     // Check unique/legendary status
@@ -1095,7 +1490,8 @@ EnemyAnalysis EnemyActorAnalyze_Internal(RE::Actor* actor) {
     if (actor->currentProcess && actor->currentProcess->middleHigh) {
         auto& equippedItems = actor->currentProcess->middleHigh->equippedItems;
         for (auto& equippedItem : equippedItems) {
-            if (auto* weapon = equippedItem.item.object->As<RE::TESObjectWEAP>()) {
+            auto* weapon = equippedItem.item.object->As<RE::TESObjectWEAP>();
+            if (weapon) {
                 std::uint32_t weaponValue = weapon->weaponData.value;
                 // Weapon value-based threat scaling
                 if (weaponValue >= 1000) {
@@ -1183,81 +1579,96 @@ std::map<ENEMY_TIER, int> EnemyActorAnalyzeThreatLevel_Internal(std::vector<Trac
 }
 
 // Equip the best items from inventory
-void EquipCompanions_Internal() {
-    std::vector<int> slotOrder = {33, 30, 41, 42, 43, 44, 45};
+void EquipCompanions_Internal(std::vector<TrackedActorData> companionData) {
+    std::vector<int> slotOrder = AI_EQUIP_SLOTS;
     // Go over each companion and equip best armor item
-    auto companionDataCopy = ActorTracking::GetCompanionData();
-    for (auto& companionData : companionDataCopy) {
-        auto* actor = companionData.actor;
+    for (auto& companion : companionData) {
+        auto* actor = companion.actor;
         if (!actor)
             continue;
+        if (!IsActorRaceHumanoid_Internal(actor))
+            continue; // Skip non-humanoid
+        if (IsActorInScene_Internal(actor))
+            continue; // Skip if in a scene
         auto* compInv = actor->inventoryList;
-        if (!compInv)
+        if (!compInv) {
+            if (DEBUGGING)
+                REX::INFO("EquipCompanions_Internal: Skipping {}, no inventory.", actor->GetDisplayFullName());
             continue;
-        if (actor->IsInCombat())
+        }
+        if (companion.isAlerted) {
+            if (DEBUGGING)
+                REX::INFO("EquipCompanions_Internal: Skipping {}, is in combat.", actor->GetDisplayFullName());
             continue; // Skip if in combat
+        }
         // Equip best armor for each slot
-        for (int slot : slotOrder) {
-            RE::BGSInventoryItem* bestArmorItem = nullptr;
-            float bestArmorValue = 0.0f;
-            // Iterate through inventory to find best item for the slot
-            for (auto& item : compInv->data) {
-                // Early exit if not armor/weapon
-                if (!IsArmorItem_Internal(item.object))
-                    continue;
-                auto* armor = item.object->As<RE::TESObjectARMO>();
-                // Check if armor fits the slot
-                if ((armor->bipedModelData.bipedObjectSlots & GetSlotMaskFromIndex_Internal(slot)) != 0) {
-                    // Get armor value
-                    float armorValue = armor->armorData.value;
-                    // Check if this is the best item so far
-                    if (armorValue > bestArmorValue) {
-                        bestArmorValue = armorValue;
-                        bestArmorItem = &item;
+        if (AI_EQUIP_ARMOR) {
+            for (int slot : slotOrder) {
+                RE::BGSInventoryItem* bestArmorItem = nullptr;
+                float bestArmorValue = 0.0f;
+                // Iterate through inventory to find best item for the slot
+                for (auto& item : compInv->data) {
+                    // Early exit if not armor/weapon
+                    if (!IsArmorItem_Internal(item.object))
+                        continue;
+                    if (IsArmorPower_Internal(&item)) {
+                        continue; // Skip power armor items
+                    }
+                    auto* armor = item.object->As<RE::TESObjectARMO>();
+                    // Check if armor fits the slot
+                    if ((armor && (armor->bipedModelData.bipedObjectSlots & GetSlotMaskFromIndex_Internal(slot))) != 0) {
+                        if (!EquipSlotCheck_Internal(actor, armor)) {
+                            continue; // Skip if it unequips other slots
+                        }
+                        // Get armor value
+                        float armorValue = armor->armorData.value;
+                        // Check if this is the best item so far
+                        if (armorValue > bestArmorValue) {
+                            bestArmorValue = armorValue;
+                            bestArmorItem = &item;
+                        }
                     }
                 }
+                // Equip the best item found for the slot
+                if (bestArmorItem && !IsActorItemEquipped_Internal(actor, bestArmorItem)) {
+                    EquipInventoryItem_Internal(actor, bestArmorItem);
+                    if (DEBUGGING)
+                        REX::INFO("EquipCompanions_Internal: Equipped {} on {} for slot {}", bestArmorItem->GetDisplayFullName(std::uint8_t(0)), actor->GetDisplayFullName(), slot);
+                }
             }
-            // Equip the best item found for the slot
-            if (bestArmorItem && !IsActorItemEquipped_Internal(actor, bestArmorItem)) {
-                EquipInventoryItem_Internal(actor, bestArmorItem);
+        }
+        if (AI_EQUIP_WEAPON) {
+            // Equip best weapon
+            RE::BGSInventoryItem* bestWeaponItem = nullptr;
+            float bestWeaponValue = 0.0f;
+            for (auto& item : compInv->data) {
+                // Early exit if not weapon
+                if (!IsWeaponItem_Internal(item.object))
+                    continue;
+                auto* weapon = item.object->As<RE::TESObjectWEAP>();
+                // Get weapon value
+                float weaponValue = weapon->weaponData.value;
+                // Check if this is the best weapon so far
+                if (weaponValue > bestWeaponValue) {
+                    bestWeaponValue = weaponValue;
+                    bestWeaponItem = &item;
+                }
+            }
+            // Equip the best weapon found
+            if (bestWeaponItem && !IsActorItemEquipped_Internal(actor, bestWeaponItem)) {
+                EquipInventoryItem_Internal(actor, bestWeaponItem);
                 if (DEBUGGING)
-                    REX::INFO("EquipCompanions_Internal: Equipped {} on {} for slot {}", bestArmorItem->GetDisplayFullName(std::uint8_t(0)), actor->GetDisplayFullName(), slot);
+                    REX::INFO("EquipCompanions_Internal: Equipped {} on {} for weapon slot", bestWeaponItem->GetDisplayFullName(std::uint8_t(0)), actor->GetDisplayFullName());
             }
-        }
-        // Equip best weapon
-        RE::BGSInventoryItem* bestWeaponItem = nullptr;
-        float bestWeaponValue = 0.0f;
-        for (auto& item : compInv->data) {
-            // Early exit if not weapon
-            if (!IsWeaponItem_Internal(item.object))
-                continue;
-            auto* weapon = item.object->As<RE::TESObjectWEAP>();
-            // Get weapon value
-            float weaponValue = weapon->weaponData.value;
-            // Check if this is the best weapon so far
-            if (weaponValue > bestWeaponValue) {
-                bestWeaponValue = weaponValue;
-                bestWeaponItem = &item;
-            }
-        }
-        // Equip the best weapon found
-        if (bestWeaponItem && !IsActorItemEquipped_Internal(actor, bestWeaponItem)) {
-            EquipInventoryItem_Internal(actor, bestWeaponItem);
-            if (DEBUGGING)
-                REX::INFO("EquipCompanions_Internal: Equipped {} on {} for weapon slot", bestWeaponItem->GetDisplayFullName(std::uint8_t(0)), actor->GetDisplayFullName());
         }
     }
 }
 
 // Equip the best items from inventory
-void EquipAmmunition_Internal() {
-    // Check if any inventory menu is open, no refilling during menu interaction
-    if (IsInventoryMenuOpen_Internal())
-        return;
+void EquipAmmunition_Internal(std::vector<TrackedActorData> companionData) {
     // Go over each companion and equip ammo for equipped weapons
-    auto companionDataCopy = ActorTracking::GetCompanionData();
-    for (auto& companionData : companionDataCopy) {
-        auto* actor = companionData.actor;
+    for (auto& companion : companionData) {
+        auto* actor = companion.actor;
         if (!actor)
             continue;
         auto* compInv = actor->inventoryList;
@@ -1301,6 +1712,9 @@ void EquipAmmunition_Internal() {
 void EquipInventoryItem_Internal(RE::Actor* aCompanion, RE::BGSInventoryItem* aInvItem) {
     if (!aInvItem || !aInvItem->object || !aCompanion)
         return;
+    if (IsArmorPower_Internal(aInvItem)) {
+        return; // Skip power frames and power armor
+    }
     // Get instance data and stack ID
     RE::TBO_InstanceData* instanceData = nullptr;
     std::uint32_t validStackID = 0;
@@ -1330,8 +1744,12 @@ void EquipInventoryItem_Internal(RE::Actor* aCompanion, RE::BGSInventoryItem* aI
         equipSlot = weapon ? weapon->equipSlot : nullptr;
     }
     // Equip using ActorEquipManager
-    auto* equipMgr = RE::ActorEquipManager::GetSingleton();
-    equipMgr->EquipObject(aCompanion, objInstance, validStackID,
+    if (!g_actorEquipMgrSingleton) {
+        if (DEBUGGING)
+            REX::WARN("EquipInventoryItem_Internal: ActorEquipManager singleton not found!");
+        return;
+    }
+    g_actorEquipMgrSingleton->EquipObject(aCompanion, objInstance, validStackID,
                           1,         // count
                           equipSlot, // slot (nullptr for weapons)
                           false,     // queueEquip
@@ -1342,26 +1760,69 @@ void EquipInventoryItem_Internal(RE::Actor* aCompanion, RE::BGSInventoryItem* aI
     );
 }
 
+// Helper function to check if equipping an item would unequip items in other slots
+bool EquipSlotCheck_Internal(RE::Actor* actor, RE::TESObjectARMO* armor) {
+    if (!actor || !armor)
+        return false;
+    auto* invList = actor->inventoryList;
+    if (!invList)
+        return false;
+    // Get the new item's biped slot mask
+    auto armorItemMask = armor->bipedModelData.bipedObjectSlots;
+    // Check the inventory of already equipped items if there are conflicts
+    for (auto& item : invList->data) {
+        if (!item.stackData->IsEquipped())
+            continue; // Skip we only need equipped items
+        auto* invArmor = item.object->As<RE::TESObjectARMO>();
+        if (!invArmor)
+            continue;
+        if (invArmor == armor) {
+            if (DEBUGGING)
+            return false; // Same item, skip and do not re-equip
+        }
+        // Compare biped slot masks
+        auto invItemMask = invArmor->bipedModelData.bipedObjectSlots;
+        if ((armorItemMask & invItemMask) != 0) {
+            if (armorItemMask == invItemMask && !IsArmorPower_Internal(&item)) {
+                continue; // the slots are the same and not power armor, allow re-equip
+            }
+            if (DEBUGGING) {
+                REX::INFO("EquipSlotCheck: BLOCKING {} - would unequip {}", armor->GetFullName(), invArmor->GetFullName());
+            }
+            return false; // Conflict found, would unequip an already equipped item in another slot
+        }
+    }
+    if (DEBUGGING) {
+        REX::INFO("EquipSlotCheck_Internal: No slot conflicts for {}", armor->GetFullName());
+    }
+    return true; // No equipped armour that would be unequipped due to slot conflicts
+}
+
 // Helper to get all Actors in the player's current cell
 std::vector<RE::Actor*> GetAllActors_Internal() {
     std::unordered_set<RE::Actor*> actorSet;
     std::vector<RE::Actor*> actors;
     // Get the player's current cell
     auto* player = RE::PlayerCharacter::GetSingleton();
-    auto playerPos = player->GetPosition();
-    auto* processLists = RE::ProcessLists::GetSingleton();
-    if (!player || !processLists)
+    if (!player || !g_processListsSingleton)
         return actors;
+    // Check if player is in a scene
+    if (IsActorInScene_Internal(player)) {
+        if (DEBUGGING)
+            REX::WARN("GetAllActors_Internal: Player is currently in a scene, cannot get actors");
+        return actors;
+    }
+    auto playerPos = player->GetPosition();
     // Check high priority actors
-    for (auto& actorHandle : processLists->highActorHandles) {
-        if (auto* actor = actorHandle.get().get()) {
+    for (auto& actorHandle : g_processListsSingleton->highActorHandles) {
+        auto* actor = actorHandle.get().get();
+        if (actor) {
             // Filter by distance instead of cell (true "radar" approach)
             auto actorPos = actor->GetPosition();
             float dx = actorPos.x - playerPos.x;
             float dy = actorPos.y - playerPos.y;
             float dz = actorPos.z - playerPos.z;
             float distance = std::sqrt(dx * dx + dy * dy + dz * dz);
-
             // Include actors within a reasonable radius
             // Adjust this value based on your needs
             if (distance <= ACTOR_SEARCH_RADIUS) {
@@ -1370,8 +1831,9 @@ std::vector<RE::Actor*> GetAllActors_Internal() {
         }
     }
     // Also check medium-high actors (companions might be here when further away)
-    for (auto& actorHandle : processLists->middleHighActorHandles) {
-        if (auto* actor = actorHandle.get().get()) {
+    for (auto& actorHandle : g_processListsSingleton->middleHighActorHandles) {
+        auto* actor = actorHandle.get().get();
+        if (actor) {
             auto actorPos = actor->GetPosition();
             float dx = actorPos.x - playerPos.x;
             float dy = actorPos.y - playerPos.y;
@@ -1383,27 +1845,29 @@ std::vector<RE::Actor*> GetAllActors_Internal() {
             }
         }
     }
+    // This adds 1000+ critters, so disabled for now
     // Also check low actors (companions might be here when further away)
-    for (auto& actorHandle : processLists->lowActorHandles) {
-        if (auto* actor = actorHandle.get().get()) {
-            auto actorPos = actor->GetPosition();
-            float dx = actorPos.x - playerPos.x;
-            float dy = actorPos.y - playerPos.y;
-            float dz = actorPos.z - playerPos.z;
-            float distance = std::sqrt(dx * dx + dy * dy + dz * dz);
-
-            if (distance <= ACTOR_SEARCH_RADIUS) {
-                actorSet.insert(actor);
-            }
-        }
-    }
+    //for (auto& actorHandle : g_processListsSingleton->lowActorHandles) {
+    //    auto* actor = actorHandle.get().get();
+    //    if (actor) {
+    //        auto actorPos = actor->GetPosition();
+    //        float dx = actorPos.x - playerPos.x;
+    //        float dy = actorPos.y - playerPos.y;
+    //        float dz = actorPos.z - playerPos.z;
+    //        float distance = std::sqrt(dx * dx + dy * dy + dz * dz);
+    //        if (distance <= ACTOR_SEARCH_RADIUS) {
+    //            actorSet.insert(actor);
+    //        }
+    //    }
+    //}
     if (!actorSet.empty())
         return std::vector<RE::Actor*>(actorSet.begin(), actorSet.end());
     // Fallback: check cell references if no actors found
     auto* currentCell = player->parentCell;
     if (currentCell) {
         for (auto& refHandle : currentCell->references) {
-            if (auto* ref = refHandle.get()) {
+            auto* ref = refHandle.get();
+            if (ref) {
                 auto* actor = ref->As<RE::Actor>();
                 if (actor) {
                     actors.push_back(actor);
@@ -1415,13 +1879,19 @@ std::vector<RE::Actor*> GetAllActors_Internal() {
 }
 
 // Helper to get all references in the player's current cell
-std::vector<RE::TESObjectREFR*> GetAllReferencesInCurrentCell_Internal() {
+std::vector<RE::TESObjectREFR*> GetAllLootReferencesInCurrentCell_Internal() {
     std::vector<RE::TESObjectREFR*> references;
     // Get the player's current cell
     auto* player = RE::PlayerCharacter::GetSingleton();
     if (!player || !player->parentCell) {
         if (DEBUGGING)
-            REX::WARN("GetAllReferencesInCurrentCell_Internal: Player or parent cell pointer is null");
+            REX::WARN("GetAllLootReferencesInCurrentCell_Internal: Player or parent cell pointer is null");
+        return references;
+    }
+    // Check if player is in a scene
+    if (IsActorInScene_Internal(player)) {
+        if (DEBUGGING)
+            REX::WARN("GetAllLootReferencesInCurrentCell_Internal: Player is currently in a scene, cannot get references");
         return references;
     }
     auto* currentCell = player->parentCell;
@@ -1429,8 +1899,27 @@ std::vector<RE::TESObjectREFR*> GetAllReferencesInCurrentCell_Internal() {
     if (!currentCell->references.empty()) {
         for (auto& refHandle : currentCell->references) {
             if (auto* ref = refHandle.get()) {
-                if (ref->As<RE::Actor>() && !ref->As<RE::Actor>()->IsDead(false)) {
-                    continue; // Skip alive actor objects
+                // Check if the reference is lootable
+                if (!IsLootableFormType_Internal(ref)) {
+                    continue; // Skip non-lootable types
+                }
+                // Check if it is excluded by keyword
+                if (IsLootKeywordExcluded_Internal(ref)) {
+                    continue; // Skip excluded keywords
+                }
+                auto* refActor = ref->As<RE::Actor>();
+                // check if the reference is an actor and skip alive actors and vendors
+                if (refActor && (!refActor->IsDead(true) || IsActorVendor_Internal(refActor))) {
+                    continue; // Skip alive or vendor actors
+                }
+                // Check if the reference has vendor in the editor ID to skip vendor chests
+                const char* editorID = ref->GetObjectReference()->GetFormEditorID();
+                if (editorID && std::string(editorID).find("Vendor") != std::string::npos) {
+                    continue; // Skip vendor chest
+                }
+                // Check if the reference is a power amor frame or power armor and skip it
+                if (IsArmorPowerFrame_Internal(ref)) {
+                    continue; // Skip power frames and power armor
                 }
                 references.push_back(ref);
             }
@@ -1600,13 +2089,12 @@ void HealActorLimbs_Internal(RE::Actor* actor) {
             REX::WARN("HealActorLimbs_Internal: Actor pointer is null");
         return;
     }
-    auto* avSingleton = RE::ActorValue::GetSingleton();
-    auto* enduranceInfo = avSingleton->enduranceCondition;
-    auto* leftAttackInfo = avSingleton->leftAttackCondition;
-    auto* rightAttackInfo = avSingleton->rightAttackCondition;
-    auto* leftMobilityInfo = avSingleton->leftMobiltyCondition;
-    auto* rightMobilityInfo = avSingleton->rightMobilityCondition;
-    auto* brainInfo = avSingleton->brainCondition;
+    auto* enduranceInfo = g_actorValueSingleton->enduranceCondition;
+    auto* leftAttackInfo = g_actorValueSingleton->leftAttackCondition;
+    auto* rightAttackInfo = g_actorValueSingleton->rightAttackCondition;
+    auto* leftMobilityInfo = g_actorValueSingleton->leftMobiltyCondition;
+    auto* rightMobilityInfo = g_actorValueSingleton->rightMobilityCondition;
+    auto* brainInfo = g_actorValueSingleton->brainCondition;
     float current = actor->GetActorValue(*enduranceInfo);
     float max = actor->GetBaseActorValue(*enduranceInfo);
     if (current < max) {
@@ -1646,7 +2134,7 @@ void HealActorHealth_Internal(RE::Actor* actor, float healthPercent) {
             REX::WARN("HealActor_Internal: Actor pointer is null");
         return;
     }
-    auto* healthAV = RE::ActorValue::GetSingleton()->health;
+    auto* healthAV = g_actorValueSingleton->health;
     if (!healthAV) {
         if (DEBUGGING)
             REX::WARN("HealActor_Internal: Health ActorValue pointer is null");
@@ -1678,12 +2166,24 @@ void HealActorPA_Internal(RE::Actor* actor) {
         if (!armor)
             continue;
         // Armor pieces but not the frame itself
-        if (armor->HasKeyword(g_kwdArmorTypePower) && !armor->HasKeyword(g_kwdIsPowerArmorFrame)) {
-            RE::BGSInventoryItem::Stack* stackData = GetInventoryItemStackData_Internal(&item);
-            if (stackData && stackData->extra && stackData->IsEquipped()) {
+        if (IsArmorPower_Internal(&item) && !armor->HasKeyword(g_kwdIsPowerArmorFrame)) {
+            if (!item.stackData)
+                continue;
+            if (!item.stackData->IsEquipped())
+                continue; // only repair equipped items
+            RE::BSTSmartPointer<RE::BGSInventoryItem::Stack> stackData = item.stackData;
+            if (stackData && stackData->extra) {
+                // Access ExtraHealth directly instead of using methods
+                auto* extraHealth = stackData->extra->GetByType<RE::ExtraHealth>();
                 float curPct = stackData->extra->GetHealthPercent();   // 0..1
-                if (curPct >= 1.0f)
-                    continue; // already at max
+                if (curPct < 1.0f) {
+                    stackData->extra->SetHealthPercent(0.99f); // if health value is invalid, set to 90%
+                    if (DEBUGGING)
+                        REX::INFO("HealActorPA_Internal: Repaired power armor item: {} from invalid value to 90.00%.", armor->GetFullName());
+                    continue;
+                }
+                if (curPct >= 0.99f)
+                    continue; // already nearly maxed
                 float newPct = std::clamp(curPct + PA_REPAIR_AMOUNT, 0.0f, 1.0f); // heal 1% and cap at 100%
                 stackData->extra->SetHealthPercent(newPct);
                 if (DEBUGGING)
@@ -1777,17 +2277,6 @@ void InitializeVariables_Internal() {
             }
         }
     }
-    // Synth 3 component
-    if (!g_raceSynth3C) {
-        g_raceSynth3C = GetFormByFileAndID_Internal<RE::TESObjectMISC>(RACE_SYNTH3C_ID);
-        if (g_raceSynth3C) {
-            if (DEBUGGING)
-                REX::INFO("InitializeVariables_Internal: Synth 3 Component found with ID 0x{:08X}", RACE_SYNTH3C_ID);
-        } else {
-            if (DEBUGGING)
-                REX::WARN("InitializeVariables_Internal: Synth 3 Component with ID 0x{:08X} not found", RACE_SYNTH3C_ID);
-        }
-    }
     // initialize animation idles
     if (!g_idleStimpak) {
         g_idleStimpak = GetFormByFileAndID_Internal<RE::TESIdleForm>(IDLE_STIMPAK_ID);
@@ -1820,6 +2309,64 @@ void InitializeVariables_Internal() {
                 REX::WARN("InitializeVariables_Internal: Is Power Armor keyword with ID 0x{:08X} not found", KYWD_ISPOWERARMORFRAME_ID);
         }
     }
+    if (!g_kwdAnimal) {
+        g_kwdAnimal = GetFormByFileAndID_Internal<RE::BGSKeyword>(KYWD_ANIMAL_ID);
+        if (g_kwdAnimal) {
+            if (DEBUGGING)
+                REX::INFO("InitializeVariables_Internal: Animal keyword found with ID 0x{:08X}", KYWD_ANIMAL_ID);
+        } else {
+            if (DEBUGGING)
+                REX::WARN("InitializeVariables_Internal: Animal keyword with ID 0x{:08X} not found", KYWD_ANIMAL_ID);
+        }
+    }
+    if (!g_kwdRobot) {
+        g_kwdRobot = GetFormByFileAndID_Internal<RE::BGSKeyword>(KYWD_ROBOT_ID);
+        if (g_kwdRobot) {
+            if (DEBUGGING)
+                REX::INFO("InitializeVariables_Internal: Robot keyword found with ID 0x{:08X}", KYWD_ROBOT_ID);
+        } else {
+            if (DEBUGGING)
+                REX::WARN("InitializeVariables_Internal: Robot keyword with ID 0x{:08X} not found", KYWD_ROBOT_ID);
+        }
+    }
+    if (!g_kwdSynth) {
+        g_kwdSynth = GetFormByFileAndID_Internal<RE::BGSKeyword>(KYWD_SYNTH_ID);
+        if (g_kwdSynth) {
+            if (DEBUGGING)
+                REX::INFO("InitializeVariables_Internal: Synth keyword found with ID 0x{:08X}", KYWD_SYNTH_ID);
+        } else {
+            if (DEBUGGING)
+                REX::WARN("InitializeVariables_Internal: Synth keyword with ID 0x{:08X} not found", KYWD_SYNTH_ID);
+        }
+    }
+    if (g_kwdLootExclude.size() == 0 || g_kwdLootExclude.size() < KYWD_LOOTEXCLUDE_ID_LIST.size()) {
+        g_kwdLootExclude.clear();
+        for (std::uint32_t keywordID : KYWD_LOOTEXCLUDE_ID_LIST) {
+            auto* keyword = GetFormByFileAndID_Internal<RE::BGSKeyword>(keywordID);
+            if (keyword) {
+                g_kwdLootExclude.push_back(keyword);
+                if (DEBUGGING)
+                    REX::INFO("InitializeVariables_Internal: Loot Exclude keyword found with ID 0x{:08X}", keywordID);
+            } else {
+                if (DEBUGGING)
+                    REX::WARN("InitializeVariables_Internal: Loot Exclude keyword with ID 0x{:08X} not found", keywordID);
+            }
+        }
+    }
+    if (g_itemLootAlways.size() == 0 || g_itemLootAlways.size() < ITEM_LOOTALWAYS_ID_LIST.size()) {
+        g_itemLootAlways.clear();
+        for (std::uint32_t itemID : ITEM_LOOTALWAYS_ID_LIST) {
+            auto* item = GetFormByFileAndID_Internal<RE::TESForm>(itemID);
+            if (item) {
+                g_itemLootAlways.push_back(item);
+                if (DEBUGGING)
+                    REX::INFO("InitializeVariables_Internal: Loot Always item found with ID 0x{:08X}", itemID);
+            } else {
+                if (DEBUGGING)
+                    REX::WARN("InitializeVariables_Internal: Loot Always item with ID 0x{:08X} not found", itemID);
+            }
+        }
+    }
     // Packages
     if (!g_packFollowersCompanion) {
         g_packFollowersCompanion = GetFormByFileAndID_Internal<RE::TESPackage>(PACK_FOLLOWERSCOMPANION_ID);
@@ -1829,6 +2376,47 @@ void InitializeVariables_Internal() {
         } else {
             if (DEBUGGING)
                 REX::WARN("InitializeVariables_Internal: Follow Player package with ID 0x{:08X} not found", PACK_FOLLOWERSCOMPANION_ID);
+        }
+    }
+    // GetSingletons
+    if (!g_actorValueSingleton) {
+        g_actorValueSingleton = RE::ActorValue::GetSingleton();
+        if (g_actorValueSingleton) {
+            if (DEBUGGING)
+                REX::INFO("InitializeVariables_Internal: ActorValue singleton initialized");
+        } else {
+            if (DEBUGGING)
+                REX::WARN("InitializeVariables_Internal: ActorValue singleton not found");
+        }
+    }
+    if (!g_processListsSingleton) {
+        g_processListsSingleton = RE::ProcessLists::GetSingleton();
+        if (g_processListsSingleton) {
+            if (DEBUGGING)
+                REX::INFO("InitializeVariables_Internal: ProcessLists singleton initialized");
+        } else {
+            if (DEBUGGING)
+                REX::WARN("InitializeVariables_Internal: ProcessLists singleton not found");
+        }
+    }
+    if (!g_actorEquipMgrSingleton) {
+        g_actorEquipMgrSingleton = RE::ActorEquipManager::GetSingleton();
+        if (g_actorEquipMgrSingleton) {
+            if (DEBUGGING)
+                REX::INFO("InitializeVariables_Internal: ActorEquipManager singleton initialized");
+        } else {
+            if (DEBUGGING)
+                REX::WARN("InitializeVariables_Internal: ActorEquipManager singleton not found");
+        }
+    }
+    if (!g_uiSingleton) {
+        g_uiSingleton = RE::UI::GetSingleton();
+        if (g_uiSingleton) {
+            if (DEBUGGING)
+                REX::INFO("InitializeVariables_Internal: UI singleton initialized");
+        } else {
+            if (DEBUGGING)
+                REX::WARN("InitializeVariables_Internal: UI singleton not found");
         }
     }
 }
@@ -1843,12 +2431,23 @@ bool IsActorActiveCompanion_Internal(RE::Actor* actor) {
             REX::WARN("IsActorActiveCompanion_Internal: Companion faction with ID 0x{:08X} not found", CURRENT_COMPANION_FACTION_ID);
         return false;
     }
-    return actor->IsInFaction(g_companionFaction);
+    // Pre-check if actor is in companion faction
+    if (!actor->IsInFaction(g_companionFaction)) {
+        return false;
+    }
+    // Further check if actor is actively following the player or temporary in combat
+    if (actor->IsFollowing() || actor->IsInCombat() || actor->IsDead(false))
+        return true;
+    // If not following or in combat, do not consider as active companion
+    return false;
 }
 
 // Helper function to check if an actor is an enemy
 bool IsActorEnemy_Internal(RE::Actor* actor) {
     if (!actor)
+        return false;
+    // Check if actor is being deleted or in bad state
+    if (actor->IsDeleted())
         return false;
     auto* player = RE::PlayerCharacter::GetSingleton();
     if (!player) {
@@ -1856,7 +2455,17 @@ bool IsActorEnemy_Internal(RE::Actor* actor) {
             REX::WARN("IsActorEnemy_Internal: Player pointer is null");
         return false;
     }
+#ifdef _MSC_VER
+    __try {
+        return actor->GetHostileToActor(player);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        if (DEBUGGING)
+            REX::WARN("IsActorEnemy_Internal: Crash prevented calling GetHostileToActor on actor");
+        return false; // Treat crashed check as non-hostile
+    }
+#else
     return actor->GetHostileToActor(player);
+#endif
 }
 
 // Check if an actor is in the exclusion list
@@ -1869,7 +2478,11 @@ bool IsActorExcluded_Internal(RE::Actor* actor) {
     // Check against exclusion list
     auto npcRefFormID = actor->GetFormID();
     auto npcBaseFormID = npc->GetFormID();
-    auto otherFormID = actor->GetObjectReference() ? actor->GetObjectReference()->GetFormID() : 0;
+    auto otherForm = actor->GetObjectReference();
+    std::uint32_t otherFormID = 0;
+    if (otherForm) {
+        otherFormID = otherForm->GetFormID();
+    }
     for (std::uint32_t excludedID : EXCLUDE_ACTOR_ID_LIST) {
         // Check any of the relevant form IDs
         if (npc->formID == excludedID) {
@@ -1884,6 +2497,30 @@ bool IsActorExcluded_Internal(RE::Actor* actor) {
         if (otherFormID == excludedID) {
             return true;
         }
+    }
+    return false;
+}
+
+// Helper function to check if an actor is currently in a scene
+bool IsActorInScene_Internal(RE::Actor* actor) {
+    if (!actor)
+        return false;
+    auto* currentScene = actor->GetCurrentScene();
+    if (currentScene) {
+        if (DEBUGGING)
+            REX::INFO("IsActorInScene_Internal: Actor {} is in scene {}", actor->GetDisplayFullName(), currentScene->GetObjectTypeName());
+        return true;
+    }
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    if (!player) {
+        if (DEBUGGING)
+            REX::WARN("IsActorInScene_Internal: Player pointer is null returning true for safety");
+        return true;
+    }
+    if (player->sceneActionActive) {
+        if (DEBUGGING)
+            REX::INFO("IsActorInScene_Internal: Player has an active scene action, assuming actor {} is in scene", actor->GetDisplayFullName());
+        return true;
     }
     return false;
 }
@@ -1908,6 +2545,7 @@ bool IsActorItemEquipped_Internal(RE::Actor* actor, RE::BGSInventoryItem* invIte
     return false;
 }
 
+// Helper function to check if an actor is the player or a companion
 bool IsActorPlayerOrCompanion_Internal(RE::Actor* actor) {
     if (!actor)
         return false;
@@ -1919,11 +2557,130 @@ bool IsActorPlayerOrCompanion_Internal(RE::Actor* actor) {
     return IsActorActiveCompanion_Internal(actor); // Check if companion
 }
 
+// Helper function to check if an actor is a humanoid
+bool IsActorRaceHumanoid_Internal(RE::Actor* actor) {
+    if (!actor)
+        return false;
+    auto* race = actor->race;
+    if (!race) {
+        if (DEBUGGING)
+            REX::INFO("IsActorRaceHumaniod_Internal: Actor {} has no race assigned, not humanoid.", actor->GetDisplayFullName());
+        return false;
+    }
+    // Get the number of biped object slots to determine if the model can have animations
+    auto* biped = reinterpret_cast<RE::BGSBipedObjectForm*>(race);
+    if (biped == nullptr) {
+        if (DEBUGGING)
+            REX::INFO("IsActorRaceHumaniod_Internal: Actor with race {} has no BGSBipedObjectForm, not humanoid.", race->GetFullName());
+        return false;
+    }
+    uint32_t definedSlots = biped->bipedModelData.bipedObjectSlots;
+    //uint32_t definedSlots = race->RE::BGSBipedObjectForm::GetFilledSlots();
+    if (definedSlots < 12) {
+        if (DEBUGGING)
+            REX::INFO("IsActorRaceHumaniod_Internal: Actor with race {} has only {} defined biped slots, not humanoid.", race->GetFullName(), definedSlots);
+        return false;
+    }
+    // Check race flags for flags of non-humanoid types
+    if (!race->data.flags2) {
+        if (DEBUGGING)
+            REX::INFO("IsActorRaceHumaniod_Internal: Actor with race {} has no flags2 defined, not humanoid.", race->GetFullName());
+        return false;
+    }
+    auto flags2 = race->data.flags2;
+    // This is the flag for "Cannot Use Playable Items" which indicates robots, gorillas, etc
+    // Missing animations for idles and other actions
+    if (race->data.flags2 & (1 << 10)) {
+        if (DEBUGGING)
+            REX::INFO("IsActorRaceHumaniod_Internal: Actor with race {} has flag Cannot Use Playable Items, not humanoid.", race->GetFullName());
+        return false;
+    }
+    if (g_kwdAnimal && actor->HasKeyword(g_kwdAnimal)) {
+        if (DEBUGGING)
+            REX::INFO("IsActorRaceHumaniod_Internal: Actor with race {} has Keyword Animal, not humanoid.", race->GetFullName());
+        return false;
+    }
+    // Check if it's a synth race and allow non-humanoid synths
+    if (IsActorRaceSynth_Internal(actor)) {
+        if (DEBUGGING)
+            REX::INFO("IsActorRaceHumaniod_Internal: Actor with race {} is a synth, not humanoid.", race->GetFullName());
+        return true;
+    }
+    // Check for Robot keyword last, not synth but still non-humanoid
+    if (g_kwdRobot && actor->HasKeyword(g_kwdRobot)) {
+        if (DEBUGGING)
+            REX::INFO("IsActorRaceHumaniod_Internal: Actor with race {} has Keyword Robot, not humanoid.", race->GetFullName());
+        return false;
+    }
+    return true;
+}
+
+// Helper function to check if an actor is a synth
+bool IsActorRaceSynth_Internal(RE::Actor* actor) {
+    if (!actor)
+        return false;
+    auto* race = actor->race;
+    if (!race) {
+        if (DEBUGGING)
+            REX::INFO("IsActorRaceSynth_Internal: Actor {} has no race assigned, not synth.", actor->GetDisplayFullName());
+        return false;
+    }
+    if (g_raceStimpak.empty()) {
+        if (DEBUGGING)
+            REX::WARN("IsActorRaceSynth_Internal: Stimpak race list is empty");
+        return false;
+    }
+    // Check if race is in the stimpak race list
+    for (auto* raceStimpak : g_raceStimpak) {
+        if (race->GetFormID() == raceStimpak->GetFormID()) {
+            // Check for robot keyword
+            if ((g_kwdRobot && actor->HasKeyword(g_kwdRobot)) || (g_kwdSynth && actor->HasKeyword(g_kwdSynth))) {
+                // handle robot case
+                if (DEBUGGING)
+                    REX::INFO("IsActorRaceSynth_Internal: Actor with race {} is synth.", race->GetFullName());
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 // Helper function to check if an actor is a vendor
 bool IsActorVendor_Internal(RE::Actor* actor) {
     if (!actor)
         return false;
     return actor->vendorFaction != nullptr;
+}
+
+// Helper function to check if an actor has reached their weight limit
+bool IsActorWeightLimit_Internal(RE::Actor* actor) {
+    if (!actor)
+        return false;
+    auto* avCarryWeight = g_actorValueSingleton->carryWeight;
+    if (!avCarryWeight)
+        return true; // cannot check carry weight return true
+    float maxWeight = actor->GetActorValue(*avCarryWeight);
+    auto* invItems = actor->inventoryList;
+    if (!invItems)
+        return true; // cannot check inventory return true
+    // Calculate total weight manually since cachedWeight is unreliable
+    float currentWeight = 0.0f;
+    for (auto& item : invItems->data) {
+        if (!item.object)
+            continue;
+        
+        float itemWeight = RE::TESWeightForm::GetFormWeight(item.object, nullptr);
+        int itemCount = item.GetCount();
+        currentWeight += itemWeight * static_cast<float>(itemCount);
+    }
+    if (!avCarryWeight)
+        return true; // cannot check carry weight return true
+    if (DEBUGGING)
+        REX::INFO("IsActorWeightLimit_Internal: Actor {} carries {:.2f} of max carry weight: {:.2f}", actor->GetDisplayFullName(), currentWeight, maxWeight);
+    if (currentWeight >= maxWeight) {
+        return true; // weight limit reached
+    }
+    return false; // weight limit not reached
 }
 
 // Helper to check if an item is an armor
@@ -1935,19 +2692,27 @@ bool IsArmorItem_Internal(RE::TESForm* itemForm) {
 }
 
 // Helper to check if an object is a power armor frame
-bool IsArmorPowerFrame_Internal(RE::TESObjectREFR* armor) {
+bool IsArmorPower_Internal(RE::TESObjectREFR* armor) {
     if (!armor)
         return false;
     // Is this reference actually an armor object (not a container/actor)?
     auto* baseForm = armor->GetObjectReference();
     if (!baseForm || baseForm->GetFormType() != RE::ENUM_FORM_ID::kARMO)
         return false;
-    // Check extra data for power armor flag
-    auto armorExtra = armor->extraList;
-    if (!armorExtra)
+    // Fallback: check keywords on the armor object
+    if (!g_kwdIsPowerArmorFrame && !g_kwdArmorTypePower)
         return false;
-    if (armorExtra->HasType(RE::EXTRA_DATA_TYPE::kPowerArmor))
+    if (armor->HasKeyword(g_kwdArmorTypePower) || armor->HasKeyword(g_kwdIsPowerArmorFrame))
         return true;
+    return false;
+}
+bool IsArmorPower_Internal(RE::BGSInventoryItem* invArmor) {
+    if (!invArmor)
+        return false;
+    // Is this reference actually an armor object?
+    auto* armor = invArmor->object->As<RE::TESObjectARMO>();
+    if (!armor)
+        return false;
     // Fallback: check keywords on the armor object
     if (!g_kwdIsPowerArmorFrame && !g_kwdArmorTypePower)
         return false;
@@ -1956,16 +2721,138 @@ bool IsArmorPowerFrame_Internal(RE::TESObjectREFR* armor) {
     return false;
 }
 
+// Helper to check if an object is a power armor frame
+bool IsArmorPowerFrame_Internal(RE::TESObjectREFR* armor) {
+    if (!armor)
+        return false;
+    // Get the base form
+    auto* baseForm = armor->GetObjectReference();
+    if (!baseForm) {
+        return false;
+    }
+    // Power armor frames are furniture, not armor
+    if (baseForm->GetFormType() != RE::ENUM_FORM_ID::kFURN) {
+        return false;
+    }
+    // Check keywords on the armor object
+    if (!g_kwdIsPowerArmorFrame && !g_kwdArmorTypePower) {
+        return false;
+    }
+    // Check keywords on the TESObjectREFR
+    if (armor->HasKeyword(g_kwdArmorTypePower) || armor->HasKeyword(g_kwdIsPowerArmorFrame)) {
+        return true;
+    }
+    // Fallback: Check editor ID for "PowerArmor" string
+    if (baseForm->GetFormEditorID()) {
+        std::string editorID(baseForm->GetFormEditorID());
+        if (editorID.find("PowerArmor") != std::string::npos) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Crash-resistant check if an item is owned by the player, returns true on failure to prevent looting
+bool IsItemOwnedByPlayer_Internal(RE::TESObjectREFR* source) {
+    if (!source)
+        return false;
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    if (!player)
+        return false;
+    // Initialize result
+    bool ownerIsPlayer = false;
+    // Get the owner form
+    RE::TESForm* owner = nullptr;
+    // The whole GetOwner() call can crash on bad pointers, so wrap in SEH
+#ifdef _MSC_VER
+    __try {
+        owner = source->GetOwner();
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return true; // GetOwner crashed, treat as owned by player to prevent looting
+    }
+#else
+    owner = source->GetOwner();
+#endif
+    if (!owner)
+        return false;
+    // Fast pointer check (no dereference)
+    if (owner == player) return true;
+    if (owner && player) {
+#ifdef _MSC_VER
+        __try {
+            ownerIsPlayer = (owner->GetFormID() == player->GetFormID());
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            ownerIsPlayer = true; // GetFormID crashed, treat as owned by player to prevent looting
+        }
+#else
+        // Non-MSVC: be conservative — avoid calling into possibly-bad pointer
+        // Optionally call GetFormID() if you trust owner to be valid on this platform
+        ownerIsPlayer = (owner->GetFormID() == player->GetFormID());
+#endif
+    }
+    return ownerIsPlayer;
+}
+
+// Helper to check if a reference is of a lootable form type
+bool IsLootableFormType_Internal(RE::TESObjectREFR* source) {
+    if (!source)
+        return false;
+    auto* baseForm = source->GetObjectReference();
+    if (!baseForm)
+        return false;
+    auto formType = baseForm->GetFormType();
+    // Check against lootable form types
+    for (auto excludedType : LOOTABLE_FORM_TYPES) {
+        if (formType == excludedType) {
+            return true; // Found in lootable types
+        }
+    }
+    return false; // Not found in lootable types
+}
+
+// Helper to check if an item is in the always loot list
+bool IsLootAlways_Internal(RE::TESForm* itemForm) {
+    if (!itemForm)
+        return false;
+    for (auto* alwaysItem : g_itemLootAlways) {
+        if (itemForm->GetFormID() == alwaysItem->GetFormID()) {
+            return true; // Item is in the always loot list
+        }
+    }
+    return false; // Item not in the always loot list
+}
+
+// Helper to check if an item has any exclusion keywords
+bool IsLootKeywordExcluded_Internal(RE::TESForm* itemForm) {
+    if (!itemForm)
+        return false;
+    auto* formKeywords = itemForm->As<RE::BGSKeywordForm>();
+    if (!formKeywords)
+        return false;
+    // Check against exclusion keywords
+    for (auto* excludeKwd : g_kwdLootExclude) {
+        if (formKeywords->HasKeyword(excludeKwd)) {
+            return true; // Item has an exclusion keyword
+        }
+    }
+    return false; // No exclusion keywords found
+}
+
 // Helper to check if any menu is open
-bool IsInventoryMenuOpen_Internal() {
-    auto* ui = RE::UI::GetSingleton();
-    if (!ui)
+bool IsMenuOpen_Internal() {
+    if (!g_uiSingleton)
         return false;
     // Go over menu stack and check if any menu is open
-    //RE::BSAutoReadLock l{ RE::UI::GetMenuMapRWLock() };
-    for (const auto& menuPtr : ui->menuStack) {
-        if (menuPtr->menuFlags.any(RE::UI_MENU_FLAGS::kInventoryItemMenu) && ui->GetMenuOpen(menuPtr->menuName))
-            return true;
+    for (const auto& menuPtr : g_uiSingleton->menuStack) {
+        if (menuPtr->menuFlags.any(RE::UI_MENU_FLAGS::kInventoryItemMenu) ||
+            menuPtr->menuFlags.any(RE::UI_MENU_FLAGS::kPausesGame) ||
+            menuPtr->menuFlags.any(RE::UI_MENU_FLAGS::kModal)) {
+            if (g_uiSingleton->GetMenuOpen(menuPtr->menuName))
+                return true;
+            if (g_uiSingleton->GetMenuOpen("BarterMenu")) {
+                return true;
+            }
+        }
     }
     return false;
 }
@@ -1979,10 +2866,13 @@ bool IsWeaponItem_Internal(RE::TESForm* itemForm) {
 }
 
 // Loot items from all references in the current cell by active companions in the loot radius
-std::int32_t LootItems_Internal() {
-    std::vector<RE::Actor*> companions = ActorTracking::GetCompanionActors();
-    if (companions.empty()) return 0;
-    std::vector<RE::TESObjectREFR*> objectReferences = GetAllReferencesInCurrentCell_Internal();
+std::int32_t LootItems_Internal(std::vector<TrackedActorData> companionData) {
+    if (companionData.empty()) return 0;
+    std::vector<RE::TESObjectREFR*> objectReferences = GetAllLootReferencesInCurrentCell_Internal();
+    // Clear looted items set before looting
+    if (objectReferences.size() > 0) {
+        g_lootedItems.clear(); // Clear looted items set before looting
+    }
     std::int32_t lootedRefCount = 0;
     for (auto* object : objectReferences) {
         if (!object)
@@ -1996,26 +2886,25 @@ std::int32_t LootItems_Internal() {
         RE::Actor* closestCompanion = nullptr;
         // Only consider companions within LOOT_RADIUS
         float closestDistance = LOOT_RADIUS;
-        auto* avSingleton = RE::ActorValue::GetSingleton();
-        auto* carryweightAV = avSingleton->carryWeight;
-        for (auto* companion : companions) {
+        auto* carryweightAV = g_actorValueSingleton->carryWeight;
+        for (auto& companion : companionData) {
             // Skip if none or in combat and LOOT_COMBAT is false
-            if (!companion)
+            if (!companion.actor)
                 continue;
-            if (companion->IsInCombat() && LOOT_COMBAT == false)
+            if (companion.isAlerted && !LOOT_COMBAT)
                 continue;
-            if (companion->IsDead(false))
+            if (companion.actor->IsDead(false))
                 continue;
-            float carrytWeight = companion->GetActorValue(*carryweightAV);
-            float currentWeight = companion->equippedWeight + companion->GetWeightInContainer();
-            if (LOOT_WEIGHT_LIMIT && (currentWeight + objectWeight) > carrytWeight) {
+            if (IsActorInScene_Internal(companion.actor))
+                continue;
+            if (LOOT_WEIGHT_LIMIT && IsActorWeightLimit_Internal(companion.actor)) {
                 continue; // Cannot carry more weight
             }
             // Calculate distance
-            float distance = GetActorDistanceToObject_Internal(companion, object);
+            float distance = GetActorDistanceToObject_Internal(companion.actor, object);
             if (distance < closestDistance) {
                 closestDistance = distance;
-                closestCompanion = companion;
+                closestCompanion = companion.actor;
             }
         }
         if (closestCompanion) {
@@ -2031,9 +2920,11 @@ std::int32_t LootItems_Internal() {
 bool LootItemFilter_Internal(RE::TESForm* aForm) {
     if (!aForm)
         return false;
-    // Check if looting is enabled
-    if (!LOOT_ENABLED)
-        return false;
+    // Check for keyword exclusion
+    auto* formKeywords = aForm->As<RE::BGSKeywordForm>();
+    if (IsLootKeywordExcluded_Internal(aForm) && !IsLootAlways_Internal(aForm)) {
+        return false; // Do not loot items with exclusion keywords
+    }
     // Get the form type
     auto formType = aForm->GetFormType();
     // Check against INI settings
@@ -2045,24 +2936,30 @@ bool LootItemFilter_Internal(RE::TESForm* aForm) {
     case RE::ENUM_FORM_ID::kALCH: // Aid items (stimpaks, chems)
         return LOOT_AID;
     case RE::ENUM_FORM_ID::kWEAP: // Weapons
-        if (IsWeaponItem_Internal(aForm) == false)
+        if (!LOOT_GEAR)
+            return false;
+        if (!IsWeaponItem_Internal(aForm))
             return false; // Sanity check for CTD
+        if (!aForm->GetPlayable(nullptr)) // Do not loot quest or unplayable items
+            return false;
         if (auto* weapon = aForm->As<RE::TESObjectWEAP>()) {
             if (weapon && weapon->weaponData.value) {
                 return weapon->weaponData.value >= LOOT_MIN_VALUE && weapon->weaponData.value <= LOOT_MAX_VALUE;
             }
         }
-        return false;
     case RE::ENUM_FORM_ID::kARMO: // Armor
-        if (IsArmorItem_Internal(aForm) == false)
+        if (!LOOT_GEAR)
+            return false;
+        if (!IsArmorItem_Internal(aForm))
             return false; // Sanity check for CTD
+        if (!aForm->GetPlayable(nullptr)) // Do not loot quest or unplayable items
+            return false;
         if (auto* armor = aForm->As<RE::TESObjectARMO>()) {
             // Check value
             if (armor && armor->armorData.value) {
                 return armor->armorData.value >= LOOT_MIN_VALUE && armor->armorData.value <= LOOT_MAX_VALUE;
             }
         }
-        return false;
     default:
         return false; // Don't loot unknown types
     }
@@ -2073,10 +2970,12 @@ bool LootItemsWeaponLooseNearCorpse_Internal(RE::TESObjectREFR* looseItem, RE::A
     if (!looseItem || !companion)
         return false;
     // Must be a weapon
-    if (!IsWeaponItem_Internal(looseItem->GetObjectReference()))
+    auto* baseForm = looseItem->GetObjectReference();
+    if (!baseForm)
+        return false;
+    if (!IsWeaponItem_Internal(baseForm))
         return false;
     // Apply loot filter for value check
-    auto* baseForm = looseItem->GetObjectReference();
     if (!LootItemFilter_Internal(baseForm))
         return false;
     auto* player = RE::PlayerCharacter::GetSingleton();
@@ -2084,17 +2983,29 @@ bool LootItemsWeaponLooseNearCorpse_Internal(RE::TESObjectREFR* looseItem, RE::A
         return false;
     auto* currentCell = player->parentCell;
     // Skips alive actors
-    auto AllReferences = GetAllReferencesInCurrentCell_Internal();
+    auto AllReferences = GetAllLootReferencesInCurrentCell_Internal();
     // Get the position of the loose item
     auto looseItemPos = looseItem->GetPosition();
     bool pickedUpAny = false;
     // Search cell references for weapons near this loose item
     for (auto* ref : AllReferences) {
         if (!ref) continue;
+        auto* refBaseForm = ref->GetObjectReference();
+        if (!refBaseForm) continue;
+        // Check if reference is an actor
+        if (refBaseForm->GetFormType() != RE::ENUM_FORM_ID::kACHR &&
+            refBaseForm->GetFormType() != RE::ENUM_FORM_ID::kNPC_) {
+            continue;
+        }
         // Must be close to loose item (dropped weapons are usually within 50-100 units)
         float distance = ref->GetPosition().GetDistance(looseItemPos);
         if (distance > 100.0f) // Adjust radius as needed
             continue;
+        // Check if already looted this item type to avoid duplicates
+        auto formID = looseItem->GetFormID();
+        if (!g_lootedItems.insert(formID).second) {
+            continue; // was already present
+        }
         // Pick it up
         companion->PickUpObject(looseItem, 1, false);
         pickedUpAny = true;
@@ -2108,12 +3019,9 @@ bool LootItemsFromReference_Internal(RE::TESObjectREFR* source, RE::Actor* compa
     if (!source || !companion)
         return false;
     // Check if source is owned by player
-    auto* player = RE::PlayerCharacter::GetSingleton();
-    if (!player)
-        return false;
-    auto* owner = source->GetOwner();
-    if (owner && owner->GetFormID() == player->GetFormID())
+    if (IsItemOwnedByPlayer_Internal(source)) {
         return false; // Do not loot items owned by player
+    }
     // Access the inventory list
     auto* invList = source->inventoryList;
     // Check if this is a power armor frame
@@ -2146,7 +3054,14 @@ bool LootItemsFromReference_Internal(RE::TESObjectREFR* source, RE::Actor* compa
         }
     }
     for (auto& itemEntry : toTransfer) {
-        if (!itemEntry.object || itemEntry.GetCount() <= 0) continue;
+        if (!itemEntry.object || itemEntry.GetCount() <= 0)
+            continue;
+        // Check if already looted this item type to avoid duplicates
+        auto formID = itemEntry.object->GetFormID();
+        if (!g_lootedItems.insert(formID).second) {
+            continue; // was already present
+        }
+        // Get the count to transfer
         int itemCount = itemEntry.GetCount();
         totalItemCount += itemCount;
         // Transfer the item
@@ -2191,14 +3106,38 @@ RE::TESObjectREFR::RemoveItemData LootBuildRemoveItemData_Internal(RE::BGSInvent
     return newData;
 }
 
+void RemoveAIAggression_Internal(std::vector<TrackedActorData> companionData) {
+    for (auto& companion : companionData) {
+        auto* actor = companion.actor;
+        if (!actor)
+            continue;
+        auto* npc = actor->GetNPC();
+        if (!npc)
+            continue;
+        // Test if aiData is safely accessible
+        if (!AIAccessTest_Internal(npc)) {
+            continue;
+        }
+        // Apply changes to aggression radius
+        if (npc->aiData.useAggroRadius != 0 ||
+            npc->aiData.aggroRadius[0] != 0 ||
+            npc->aiData.aggroRadius[1] != 0 ||
+            npc->aiData.aggroRadius[2] != 0) {
+            npc->aiData.useAggroRadius = 0;
+            npc->aiData.aggroRadius[0] = 0;
+            npc->aiData.aggroRadius[1] = 0;
+            npc->aiData.aggroRadius[2] = 0;
+        }
+    }
+}
+
 // Set companion chatter multiplier
 void SetCompanionChatter_Internal(RE::Actor* comp) {
     if (!comp)
         return;
     // Get current idle chatter AV values
-    auto* avSingleton = RE::ActorValue::GetSingleton();
-    auto* idleChatterMinAV = avSingleton->idleChatterTimeMin;
-    auto* idleChatterMaxAV = avSingleton->idleChatterTimeMAx;
+    auto* idleChatterMinAV = g_actorValueSingleton->idleChatterTimeMin;
+    auto* idleChatterMaxAV = g_actorValueSingleton->idleChatterTimeMAx;
     auto idleChatterMin = comp->GetActorValue(*idleChatterMinAV);
     auto idleChatterMax = comp->GetActorValue(*idleChatterMaxAV);
     auto idleChatterBaseMin = comp->GetBaseActorValue(*idleChatterMinAV);
@@ -2319,7 +3258,11 @@ std::int32_t UpdateGlobalActorArrays_Internal() {
     for (auto* enemy : tempEnemies) {
         if (!enemy)
             continue;
-        float health = enemy->GetPermanentActorValue(*RE::ActorValue::GetSingleton()->health);
+        float health = 0.0f;
+        auto* healthAV = g_actorValueSingleton->health;
+        if (healthAV) {
+            health = enemy->GetPermanentActorValue(*healthAV);
+        }
         if (health > maxHealth) {
             maxHealth = health;
         }
@@ -2347,27 +3290,21 @@ std::int32_t UpdateGlobalActorArrays_Internal() {
             // Compare with previous state for changes
             auto prevOpt = ActorTracking::GetPreviousCompanionData(actor);
             if (prevOpt) {
-                // Preserve aiUpdated from previous state if it exists
-                dataCompanionActor.aiUpdated = prevOpt->aiUpdated;
-                dataCompanionActor.buffed = prevOpt->buffed;
                 // Stimpak usage and health/distance changes
                 bool wasUsingStimpak = prevOpt->usesStimpak;
                 // Check if the companion is using a stimpak
-                if (actor->inventoryList && actor->race && !actor->IsDead(false) && !g_raceStimpak.empty() && g_raceSynth3C) {
+                if (actor->race && !actor->IsDead(false) && !g_raceStimpak.empty()) {
                     bool isStimpakRace = false;
                     for (auto* humanRace : g_raceStimpak) {
-                        if (actor->race->GetFormID() == humanRace->GetFormID()) {
+                        if (actor->race && actor->race->GetFormID() == humanRace->GetFormID()) {
                             isStimpakRace = true;
                             break;
                         }
                     }
                     if (isStimpakRace) {
                         dataCompanionActor.usesStimpak = true;
-                        for (const auto& item : actor->inventoryList->data) {
-                            if (item.object && item.object->GetFormID() == g_raceSynth3C->GetFormID()) {
-                                dataCompanionActor.usesStimpak = false;
-                                break;
-                            }
+                        if (IsActorRaceSynth_Internal(actor)) {
+                            dataCompanionActor.usesStimpak = false;
                         }
                     } else {
                         dataCompanionActor.usesStimpak = false;
@@ -2403,6 +3340,27 @@ std::int32_t UpdateGlobalActorArrays_Internal() {
             dataNeutralActors.push_back(dataNeutralActor);
         }
     }
+    // Get a diff between current and previous state to apply RemoveAIAggression to the missing companions
+    // Create a temporary tracked data to pass to RemoveAIAggression_Internal
+    std::vector<TrackedActorData> missingCompanionData;
+    auto companionData = ActorTracking::GetCompanionData();
+    for (const auto& prevCompanion : companionData) {
+        bool found = false;
+        for (const auto& currCompanion : dataCompanionActors) {
+            if (prevCompanion.actor == nullptr || currCompanion.actor == nullptr)
+                continue;
+            if (prevCompanion.actor == currCompanion.actor) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            // Companion is missing from current snapshot
+            missingCompanionData.push_back(prevCompanion);
+        }
+    }
+    // Remove AI aggression from missing companions
+    RemoveAIAggression_Internal(missingCompanionData);
     // Cache current state
     ActorTracking::CacheCurrentState();
     // Clear old data
@@ -2423,41 +3381,44 @@ std::int32_t UpdateGlobalActorArrays_Internal() {
 void ActorTracking::EnsureCompanionFlagEntry(RE::Actor* actor) {
     if (!actor) return;
     std::lock_guard<std::mutex> lk(g_companionFlagsMutex);
-    g_companionFlags.try_emplace(actor);
+    g_companionFlags.try_emplace(actor, std::make_unique<ActorTracking::CompanionFlags>());
 }
 
 void ActorTracking::SyncCompanionFlagsWithSnapshot(const std::vector<TrackedActorData>& snapshot) {
-    std::lock_guard<std::mutex> lk(g_companionFlagsMutex);
-    // Build set of current actors from snapshot
-    std::unordered_set<RE::Actor*> present;
-    present.reserve(snapshot.size());
-    for (const auto &d : snapshot) if (d.actor) present.insert(d.actor);
-    // Remove stale entries
-    for (auto it = g_companionFlags.begin(); it != g_companionFlags.end();) {
-        if (present.find(it->first) == present.end()) it = g_companionFlags.erase(it);
-        else ++it;
+    // Build a new set of current actors from snapshot (NO LOCK - it's local)
+    std::unordered_map<RE::Actor*, std::unique_ptr<CompanionFlags>> newFlags;
+    newFlags.reserve(snapshot.size() * 2);
+    // Copy the existing data from the old map to the new map
+    {
+        std::lock_guard<std::mutex> lk(g_companionFlagsMutex);
+        for (const auto &d : snapshot) {
+            if (!d.actor) continue;
+            
+            auto it = g_companionFlags.find(d.actor);
+            if (it != g_companionFlags.end() && it->second) {
+                // Move existing entry to preserve counter values
+                newFlags[d.actor] = std::move(it->second);
+            } else {
+                // Create fresh entry
+                newFlags[d.actor] = std::make_unique<CompanionFlags>();
+            }
+            
+            // Update values in new map
+            auto& flags = newFlags[d.actor];
+            if (flags) { 
+                flags->lastPosX = d.position.x;
+                flags->lastPosY = d.position.y;
+                flags->lastPosZ = d.position.z;
+                flags->velocity = d.velocity;
+                flags->stuckCounter = d.stuckCounter;
+                flags->lost = d.lost;
+            }
+        }
     }
-    // Add missing entries
-    for (auto *a : present) {
-        if (g_companionFlags.find(a) == g_companionFlags.end())
-            g_companionFlags.try_emplace(a);
-    }
-    for (const auto &d : snapshot) {
-        auto it = g_companionFlags.find(d.actor);
-        if (it == g_companionFlags.end()) continue;
-        // Update last position
-        it->second.lastPosX.store(d.position.x, std::memory_order_release);
-        it->second.lastPosY.store(d.position.y, std::memory_order_release);
-        it->second.lastPosZ.store(d.position.z, std::memory_order_release);
-        // Update velocity
-        it->second.velocity.store(d.velocity, std::memory_order_release);
-        // Update stuck counter
-        it->second.stuckCounter.store(d.stuckCounter, std::memory_order_release);
-        // Update lost status
-        it->second.lost.store(d.lost, std::memory_order_release);
-    }
-    for (auto *a : present) {
-        g_companionFlags.try_emplace(a);
+    // Replace old map with new map
+    {
+        std::lock_guard<std::mutex> lk(g_companionFlagsMutex);
+        g_companionFlags = std::move(newFlags);
     }
 }
 
@@ -2466,83 +3427,118 @@ bool ActorTracking::GetActorStuckStatusFast(RE::Actor* actor) {
     if (!actor) return false;
     std::lock_guard<std::mutex> lk(g_companionFlagsMutex);
     auto it = g_companionFlags.find(actor);
-    return (it != g_companionFlags.end()) ? it->second.stuck.load(std::memory_order_acquire) : false;
+    // Check if entry exists
+    if (it != g_companionFlags.end()) {
+        return it->second->stuck;
+    }
+    return false;
 }
 void ActorTracking::SetActorStuckStatusFast(RE::Actor* actor, bool stuck) {
     if (!actor) return;
     std::lock_guard<std::mutex> lk(g_companionFlagsMutex);
     auto it = g_companionFlags.find(actor);
-    if (it == g_companionFlags.end()) it = g_companionFlags.try_emplace(actor).first;
-    it->second.stuck.store(stuck, std::memory_order_release);
+    // Check if entry exists
+    if (it != g_companionFlags.end()) {
+        it->second->stuck = stuck;
+    }
+    return;
 }
 
 int ActorTracking::GetActorStuckCounterFast(RE::Actor* actor) {
     if (!actor) return 0;
     std::lock_guard<std::mutex> lk(g_companionFlagsMutex);
     auto it = g_companionFlags.find(actor);
-    return (it != g_companionFlags.end()) ? it->second.stuckCounter.load(std::memory_order_acquire) : 0;
+    // Check if entry exists
+    if (it != g_companionFlags.end()) {
+        return it->second->stuckCounter;
+    }
+    return 0;
 }
 void ActorTracking::IncrementActorStuckCounterFast(RE::Actor* actor) {
     if (!actor) return;
     std::lock_guard<std::mutex> lk(g_companionFlagsMutex);
     auto it = g_companionFlags.find(actor);
-    if (it == g_companionFlags.end()) it = g_companionFlags.try_emplace(actor).first;
-    it->second.stuckCounter.fetch_add(1, std::memory_order_acq_rel);
+    // Check if entry exists
+    if (it != g_companionFlags.end()) {
+        ++(it->second->stuckCounter);
+    }
+    return;
 }
 void ActorTracking::SetActorStuckCounterFast(RE::Actor* actor, int counter) {
     if (!actor) return;
     std::lock_guard<std::mutex> lk(g_companionFlagsMutex);
     auto it = g_companionFlags.find(actor);
-    if (it == g_companionFlags.end()) it = g_companionFlags.try_emplace(actor).first;
-    it->second.stuckCounter.store(counter, std::memory_order_release);
+    // Check if entry exists
+    if (it != g_companionFlags.end()) {
+        it->second->stuckCounter = counter;
+    }
+    return;
 }
-
 float ActorTracking::GetActorVelocityFast(RE::Actor* actor) {
     if (!actor) return 0.0f;
     std::lock_guard<std::mutex> lk(g_companionFlagsMutex);
     auto it = g_companionFlags.find(actor);
-    return (it != g_companionFlags.end()) ? it->second.velocity.load(std::memory_order_acquire) : 0.0f;
+    // Check if entry exists
+    if (it != g_companionFlags.end()) {
+        return it->second->velocity;
+    }
+    return 0.0f;
 }
 void ActorTracking::SetActorVelocityFast(RE::Actor* actor, float vel) {
     if (!actor) return;
     std::lock_guard<std::mutex> lk(g_companionFlagsMutex);
     auto it = g_companionFlags.find(actor);
-    if (it == g_companionFlags.end()) it = g_companionFlags.try_emplace(actor).first;
-    it->second.velocity.store(vel, std::memory_order_release);
+    // Check if entry exists
+    if (it != g_companionFlags.end()) {
+        it->second->velocity = vel;
+    }
+    return;
 }
 
 void ActorTracking::SetActorLastPositionFast(RE::Actor* actor, const RE::NiPoint3& pos) {
     if (!actor) return;
     std::lock_guard<std::mutex> lk(g_companionFlagsMutex);
     auto it = g_companionFlags.find(actor);
-    if (it == g_companionFlags.end()) it = g_companionFlags.try_emplace(actor).first;
-    it->second.lastPosX.store(pos.x, std::memory_order_release);
-    it->second.lastPosY.store(pos.y, std::memory_order_release);
-    it->second.lastPosZ.store(pos.z, std::memory_order_release);
+    // Check if entry exists
+    if (it != g_companionFlags.end()) {
+        it->second->lastPosX = pos.x;
+        it->second->lastPosY = pos.y;
+        it->second->lastPosZ = pos.z;
+    }
+    return;
 }
 void ActorTracking::GetActorLastPositionFast(RE::Actor* actor, RE::NiPoint3& outPos) {
     outPos = RE::NiPoint3{0.0f, 0.0f, 0.0f};
     if (!actor) return;
     std::lock_guard<std::mutex> lk(g_companionFlagsMutex);
     auto it = g_companionFlags.find(actor);
-    if (it == g_companionFlags.end()) return;
-    outPos.x = it->second.lastPosX.load(std::memory_order_acquire);
-    outPos.y = it->second.lastPosY.load(std::memory_order_acquire);
-    outPos.z = it->second.lastPosZ.load(std::memory_order_acquire);
+    // Check if entry exists
+    if (it != g_companionFlags.end()) {
+        outPos.x = it->second->lastPosX;
+        outPos.y = it->second->lastPosY;
+        outPos.z = it->second->lastPosZ;
+    }
+    return;
 }
-
 bool ActorTracking::GetActorLostStatusFast(RE::Actor* actor) {
     if (!actor) return false;
     std::lock_guard<std::mutex> lk(g_companionFlagsMutex);
     auto it = g_companionFlags.find(actor);
-    return (it != g_companionFlags.end()) ? it->second.lost.load(std::memory_order_acquire) : false;
+    // Check if entry exists
+    if (it != g_companionFlags.end()) {
+        return it->second->lost;
+    }
+    return false;
 }
 void ActorTracking::SetActorLostStatusFast(RE::Actor* actor, bool lost) {
     if (!actor) return;
     std::lock_guard<std::mutex> lk(g_companionFlagsMutex);
     auto it = g_companionFlags.find(actor);
-    if (it == g_companionFlags.end()) it = g_companionFlags.try_emplace(actor).first;
-    it->second.lost.store(lost, std::memory_order_release);
+    // Check if entry exists
+    if (it != g_companionFlags.end()) {
+        it->second->lost = lost;
+    }
+    return;
 }
 
 // Companion Movement task management
@@ -2566,6 +3562,22 @@ void AddCompanionTask(RE::Actor* companion, float duration) {
 void ProcessCompanionTasks(float deltaTime) {
     std::lock_guard<std::mutex> lock(g_companionTasksMutex);
     for (auto it = g_companionTasks.begin(); it != g_companionTasks.end();) {
+        // Validate companion
+        if (!it->companion) {
+            it = g_companionTasks.erase(it);
+            continue;
+        }
+        if (it->companion->IsDeleted() || !it->companion->Get3D()) {
+            // Manually remove stuck measures and erase task to increment iterator
+            MovementSystem::RemoveStuckMeasures(it->companion);
+            it = g_companionTasks.erase(it);
+            continue;
+        }
+        // Check if a scene is running - skip processing during scenes
+        if (IsActorInScene_Internal(it->companion)) {
+            ++it;
+            continue;
+        }
         it->timeRemaining -= deltaTime;
         // Timer expired - check if we should remove the task
         if (it->timeRemaining <= 0.0f) {
@@ -2575,51 +3587,57 @@ void ProcessCompanionTasks(float deltaTime) {
             it = g_companionTasks.erase(it);
         } else {
             // Check if companion is moving and stuck to apply measures if needed
-            if (it->companion && it->companion->currentProcess && it->companion->currentProcess->middleHigh) {
-                // Do not process stuck checks if not following player
-                if (!it->companion->IsFollowing()) {
-                    ++it;
-                    continue;
-                }
+            if (it->companion->currentProcess && it->companion->currentProcess->middleHigh) {
                 // Checks for stuck status
-                bool pathStuck = false;
-                bool velocityStuck = false;
-                bool collisionStuck = false;
+                bool isStuck = false;
                 // Get current velocity between main loop updates
                 float velocity = ActorTracking::GetActorVelocityFast(it->companion);
-                // Check when pathing
-                if (it->companion->IsPathing() && !it->companion->currentProcess->middleHigh->currentIdle) {
-                    // IsPathValid checks if the path is still valid on the NavMesh
-                    if (!it->companion->IsPathValid()) {
-                        pathStuck = true;
+                // Check if the AI is trying to move
+                if (it->companion->currentProcess->middleHigh->desiredSpeed <= 0.0f) {
+                    // Not trying to move - skip velocity stuck check
+                    ActorTracking::SetActorStuckCounterFast(it->companion, 0);
+                } else {
+                    // Check velocity-based stuck (moving too slowly while not idling)
+                    if (velocity < AI_STUCK_SPEED &&
+                        it->companion->currentProcess->middleHigh->desiredSpeed > velocity &&
+                        // Make dure the companion is not idling
+                        !it->companion->currentProcess->middleHigh->currentIdle &&
+                        !it->companion->currentProcess->middleHigh->furnitureIdle) {
+                        // speed < threshold indicates little to no real movement
+                        // While desiredSpeed > velocity indicates the companion is trying to move
+                        // Could be stuck before an obstacle
+                        isStuck = true;
+                    } else if (velocity >= AI_STUCK_SPEED) {
+                        // Moving normally - reset counter
+                        ActorTracking::SetActorStuckCounterFast(it->companion, 0);
                     }
-                    // speed < threshold indicates little to no real movement
-                    // Could be stuck before an obstacle
-                    if (velocity < AI_STUCK_SPEED) {
-                        velocityStuck = true;
+                    // Check collision-based stuck
+                    // Someone or something runs into the companion, could be the player
+                    // compCharCtrl->numCollisions > 0 indicates collisions with the player or other objects
+                    auto* compCharCtrl = it->companion->currentProcess->middleHigh->charController.get();
+                    if (compCharCtrl && compCharCtrl->numCollisions > AI_STUCK_COLLISIONS) {
+                        isStuck = true;
                     }
                 }
-                // Check collisions when standing still or pathing
-                // Someone or somthing runs into the companion, could be the player
-                // compCharCtrl->numCollisions > 0 indicates collisions with the player or other objects
-                auto* compCharCtrl = it->companion->currentProcess->middleHigh->charController.get();
-                if (compCharCtrl->numCollisions > AI_STUCK_COLLISIONS) {
-                    collisionStuck = true;
-                }
-                // Check if any stuck condition is met
-                if (pathStuck || velocityStuck || collisionStuck) {
+                // Apply progressive escalation based on stuck status
+                if (isStuck) {
                     ActorTracking::SetActorStuckStatusFast(it->companion, true);
-                    if (pathStuck) {
-                        ActorTracking::IncrementActorStuckCounterFast(it->companion);
+                    ActorTracking::IncrementActorStuckCounterFast(it->companion);
+                    
+                    // Get current stuck counter to determine which tier of measures to apply
+                    int currentCount = ActorTracking::GetActorStuckCounterFast(it->companion);
+                    
+                    if (currentCount <= UPDATE_INTERVAL * 10) {
+                        // Tier 1: Soft NavMesh adjustment (Z position bump)
+                        // First full main loop cycle - try gentle measures
                         MovementSystem::ApplyStuckMeasures1(it->companion);
-                    } else if (velocityStuck) {
-                        ActorTracking::IncrementActorStuckCounterFast(it->companion);
+                    } else if (currentCount <= 2 * UPDATE_INTERVAL * 10) {
+                        // Tier 2: Aggressive measures (disable bumper, fake support, step height)
+                        // Second full main loop cycle - try more aggressive measures
                         MovementSystem::ApplyStuckMeasures2(it->companion);
-                    } else if (collisionStuck) {
-                        ActorTracking::IncrementActorStuckCounterFast(it->companion);
-                        MovementSystem::ApplyStuckMeasures2(it->companion);
-                    }
-                    if (ActorTracking::GetActorStuckCounterFast(it->companion) > AI_STUCK_THRESHOLD) {
+                    } else {
+                        // Tier 3: Totally stuck - set lost flag for main loop teleport
+                        // After two full main loop cycles, give up and mark for teleport
                         ActorTracking::SetActorLostStatusFast(it->companion, true);
                     }
                 } else {
@@ -2662,7 +3680,7 @@ void ApplyStuckMeasures1(RE::Actor* companion) {
                 RE::NiPoint3 currentPosition = task.companion->GetPosition();
                 // Move up by 0.5 units to pick up the new navmesh and force a re-evaluation
                 // This should be barely visible to the player
-                currentPosition.z += 0.5f;
+                currentPosition.z += 0.1f;
                 // Teleport and true to update CharController position as well
                 task.companion->SetPosition(currentPosition, true);
                 // Update the character 3D position
