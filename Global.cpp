@@ -1,57 +1,97 @@
 #include <PCH.h>
 #include <Global.h>
 
-const char* defaultIni = R"(
+const char* defaultIni_part1 = R"(
 ; Companion Control Booster Configuration File
 ;------------------------------------------------------------------------
 ; This file contains configuration settings for the Companion Control Booster mod.
 ; The settings are applied to all current companions travelling with the player.
-
 ; Enable/disable debugging messages.
 DEBUGGING=false
 ; Timer delay for systems that struggle to load (in seconds).
 TIMER_DELAY=60.0
 ; Global Update Interval in seconds.
 UPDATE_INTERVAL=3.0
-; Read the MCM ini every x updates (0 = only on game start).
+; Read the MCM ini every x updates (0 = Never load MCM settings).
 INI_RELOAD_INTERVAL=1
 ; Actor search radius around the player in game units.
-ACTOR_SEARCH_RADIUS=4000.0
+ACTOR_SEARCH_RADIUS=8000.0
 
-; --- AI Settings ---
-; Configure AI settings
-AI_HEALTH_THRESHOLD=40.0             ; Health percentage threshold to react (0.0 - 100.0)
+; ON/OFF SETTINGS (Mimics MCM settings for easier editing)
+;------------------------------------------------------------------------
+COMBAT_SETTINGS=true                 ; Enable Combat Settings menu
+COMBATSTYLE_ENABLED=true             ; Enable companion combatstyle settings
 AI_USE_STIMPAK_ENABLED=true          ; Allow companions to use stimpaks or repair kits
 AI_USE_STIMPAK_UNLIMITED=false       ; Allow companions to use unlimited stimpaks or repair kits without consuming them (contradicts fleeing behavior)
 AI_AUTO_REVIVE=true                  ; Allow companions to auto-revive when downed in combat (also in HC mode)
 AI_FLEE_COMBAT=true                  ; Allow companions to flee combat if their health is low and no stimpaks or repair kits are available
-AI_FLEE_DISTANCE=500.0               ; Maximum distance to flee
-; Items
-AI_EQUIP_ITEMS=true                  ; Enable armor, weapon and ammo equipping for companions
-AI_EQUIP_ARMOR=false                 ; Allow companions to equip the best armor from inventory
-AI_EQUIP_SLOTS=42,43,44,45           ; Armor slots in order to consider. 33 Outfit, 30 Head, 41 [A]Body, 42 [A]Left Arm, 43 [A]Right Arm, 44 [A]Left Leg, 45 [A]Right Leg
-AI_EQUIP_WEAPON=false                ; Allow companions to equip the best weapon from inventory
+AI_AGGRESSION_ENABLE=true            ; Enable AI aggression settings on standard follow AI package
+AI_AGGRESSION_ZONEAWARE=true         ; Enable AI aggression settings only in encounter zones
+AI_AGGRESSION_SNEAK=false            ; Enable AI aggression when sneaking (overrides AI_AGGRESSION_ALL)
+PA_ENABLED=true                      ; Enable power armor repair for companions
 AI_EQUIP_AMMO_REFILL=true            ; Supply ammunition to the companion for the equipped weapon
+;------------------------------------------------------------------------
+FOLLOW_SETTINGS=true                 ; Enable Follow Settings menu
+AI_DISTANCE_ENABLED=true             ; Enable follow distance settings
+AI_FOLLOW_DISTANCE_GENERAL=1         ; Default follow distance setting: 0=Near, 1=Medium, 2=Far
+AI_FOLLOW_DISTANCE_INTERIORS=0       ; Follow distance setting for interiors: 0=Near, 1=Medium, 2=Far
+AI_SPEED_ENABLED=true                ; Enable follow speed adjustment based on distance
+AI_STUCK_ENABLED=true                ; Enable stuck check for companions (includes teleportation if lost)
+;------------------------------------------------------------------------
+LOOTING_SETTINGS=true                ; Enable Looting Settings menu
+LOOT_ENABLED=true                    ; Enable companion looting
+LOOT_COMBAT=false                    ; Loot when in combat
+LOOT_JUNK=true                       ; Loot junk items
+LOOT_AMMO=true                       ; Loot ammunition
+LOOT_AID=true                        ; Loot aid items
+LOOT_GEAR=true                       ; Loot armor and weapons
+LOOT_STEAL=false                     ; Commit a crime when looting items
+LOOT_WEIGHT_LIMIT=true               ; Companions stop looting when they reach their carry weight limit
+LOOT_JUNK_BREAKDOWN=true             ; Break down junk items in the inventory into components if possible
+;------------------------------------------------------------------------
+ATTRIBUTES_SETTINGS=true             ; Enable Attributes Settings menu
+BUFF_ENABLED=true                    ; Enable companion buffs
+BUFF_SET_VALUES=false                ; If enabled, the AV are set and not checked for minimum only
+PERK_ENABLED=true                    ; Enable companion perk assignment
+KEYWORD_ENABLED=true                 ; Enable companion keyword assignment
+;------------------------------------------------------------------------
+OTHER_SETTINGS=true                  ; Enable Other Settings menu
+AI_EQUIP_ARMOR=false                 ; Allow companions to equip the best armor from inventory
+AI_EQUIP_WEAPON=false                ; Allow companions to equip the best weapon from inventory
+CHATTER_ENABLED=true                 ; Enable companion idle chatter adjustment
+XP_ENABLED=true                      ; Enable XP gain from companion kills
+;------------------------------------------------------------------------
+
+; Below are advanced settings to fine-tune the mod behavior.
+
+; --- AI Settings ---
+; Configure AI settings
+AI_HEALTH_THRESHOLD=40.0             ; Health percentage threshold to react (0.0 - 100.0)
+AI_FLEE_DISTANCE=500.0               ; Maximum distance to flee
+AI_FOLLOW_DISTANCE_NEAR=500.0        ; Follow distance from the player (sets global values for all companions default 500.0)
+AI_FOLLOW_DISTANCE_MEDIUM=1000.0     ; Follow distance from the player (sets global values for all companions default 1000.0)
+AI_FOLLOW_DISTANCE_FAR=1500.0        ; Follow distance from the player (sets global values for all companions default 1500.0)
+AI_FOLLOW_SPEED_FAR=2.0              ; Speed multiplier when the companion is at far distance (1.0 = normal speed)
+AI_FOLLOW_SPEED_MEDIUM=1.5           ; Speed multiplier when the companion is at medium distance (1.0 = normal speed)
+AI_FOLLOW_SPEED_NEAR=1.0             ; Speed multiplier when the companion is at near distance (1.0 = normal speed)
+; Items
+AI_EQUIP_SLOTS=42,43,44,45           ; Armor slots in order to consider. 33 Outfit, 30 Head, 41 [A]Body, 42 [A]Left Arm, 43 [A]Right Arm, 44 [A]Left Leg, 45 [A]Right Leg
 AI_EQUIP_AMMO_AMOUNT=50              ; Minimum Amount of ammunition companions always have for their equipped weapon
 ; Movement
 ; A fast update loop runs at 10hz to monitor companion movement.
-AI_STUCK_CHECK=true                  ; Enable stuck check for companions
 AI_STUCK_THRESHOLD=59                ; How many fast updates stuck to consider a companion lost and teleport (59 fast update loops at 10hz with 3s main loop = 6 seconds)
 AI_STUCK_COLLISIONS=2                ; Number of collisions to consider a companion stuck (apply blocked measures)
 AI_STUCK_SPEED=10.0                  ; Speed threshold to consider a companion stuck when pathing (units/second).
-AI_STUCK_DISTANCE=1500.0             ; Distance threshold to consider a companion lost and teleport (too far away from the player)
+AI_OVERSHOOT_SPEED=250.0             ; Speed threshold to consider a companion overshooting when pathing near the player (units/second). (walk is ~100, run is ~200, sprint is ~400+)
 ; Aggression
 ; This enables companions to engage in combat on their own and not wait for the enemy to shoot at them or the player.
-AI_AGGRESSION_ENABLE=true            ; Enable AI aggression settings on standard follow AI package
-AI_AGGRESSION_ALL=true               ; Enable AI aggression on all AI packages
-AI_AGGRESSION_SNEAK=false            ; Enable AI aggression when sneaking (overrides AI_AGGRESSION_ALL)
+AI_AGGRESSION_ALL=true               ; Enable AI aggression on all AI packages, not just follow
 AI_AGGRESSION_RADIUS0=1600.0         ; Distance when companions could detect nearby enemies
 AI_AGGRESSION_RADIUS1=1200.0         ; Distance when companions could attack nearby enemies
 AI_AGGRESSION_RADIUS2=800.0          ; Distance when companions Attack on sight
 
 ; --- Chatter Settings ---
 ; Companion idle chatter multiplier.
-CHATTER_ENABLED=true                 ; Enable companion idle chatter adjustment
 CHATTER_MULTIPLIER=1.0               ; 0.5 = Very frequent, 1.0 = Default, 2.0 = Half as often, 5.0 = Very quiet
 CHATTER_MULTIPLIER_SNEAK=5.0         ; 0.5 = Very frequent, 1.0 = Default, 2.0 = Half as often, 5.0 = Very quiet
 
@@ -59,26 +99,25 @@ CHATTER_MULTIPLIER_SNEAK=5.0         ; 0.5 = Very frequent, 1.0 = Default, 2.0 =
 ; These settings are good for an allround balanced combat behavior.
 ; Adjust the values to tweak companion combat behavior.
 ; Setting 1.0 means no change to the actors default behavior.
-COMBAT_ENABLED=true                  ; Enable companion combat settings
-COMBAT_TARGET=1                      ; Target selection: 0=closest, 1=lowest_threat, 2=highest_threat
-COMBAT_OFFENSIVE=0.6                 ; Offensive combat multiplier (0.0 = passive, 0.9 = aggressive) (1.0 = no change)
-COMBAT_DEFENSIVE=0.6                 ; Defensive combat multiplier (0.0 = reckless, 0.9 = cautious) (1.0 = no change)
-COMBAT_RANGED=1.0                    ; Prefered ranged combat (0.0 = none, 0.9 = standard ranged combat) (1.0 = no change)
-COMBAT_MELEE=1.0                     ; Prefered melee combat (0.0 = none, 0.9 = standard melee combat) (1.0 = no change)
+COMBATSTYLE_TARGET=1                      ; Target selection: 0=closest, 1=lowest_threat, 2=highest_threat
+COMBATSTYLE_OFFENSIVE=0.6                 ; Offensive combat multiplier (0.0 = passive, 0.9 = aggressive) (1.0 = no change)
+COMBATSTYLE_DEFENSIVE=0.6                 ; Defensive combat multiplier (0.0 = reckless, 0.9 = cautious) (1.0 = no change)
+COMBATSTYLE_RANGED_WEAPON=1.0             ; Prefered ranged combat (0.0 = none, 0.9 = standard ranged combat) (1.0 = no change)
+COMBATSTYLE_MELEE_WEAPON=1.0              ; Prefered melee combat (0.0 = none, 0.9 = standard melee combat) (1.0 = no change)
 ; Ranged
-COMBAT_RANGED_ADJUSTMENT=0.5         ; Chance to adjust the weapon (0.0 = never, 0.9 = always) (1.0 = no change)
-COMBAT_RANGED_CROUCHING=0.8          ; Chance to crouch (0.0 = never, 0.9 = always) (1.0 = no change)
-COMBAT_RANGED_STRAFE=0.5             ; Chance to strafe (0.0 = never, 0.9 = always) (1.0 = no change)
-COMBAT_RANGED_WAITING=0.5            ; Chance to wait between attacks (0.0 = never, 0.9 = always) (1.0 = no change)
-COMBAT_RANGED_ACCURACY=0.4           ; Shooting accuracy (0.0 = poor, 0.9 = perfect) (1.0 = no change)
+COMBATSTYLE_RANGED_ADJUSTMENT=0.5         ; Chance to adjust the weapon (0.0 = never, 0.9 = always) (1.0 = no change)
+COMBATSTYLE_RANGED_CROUCHING=0.8          ; Chance to crouch (0.0 = never, 0.9 = always) (1.0 = no change)
+COMBATSTYLE_RANGED_STRAFE=0.5             ; Chance to strafe (0.0 = never, 0.9 = always) (1.0 = no change)
+COMBATSTYLE_RANGED_WAITING=0.5            ; Chance to wait between attacks (0.0 = never, 0.9 = always) (1.0 = no change)
+COMBATSTYLE_RANGED_ACCURACY=0.4           ; Shooting accuracy (0.0 = poor, 0.9 = perfect) (1.0 = no change)
 ; Close-Quarters
-COMBAT_CLOSE_FALLBACK=0.5            ; Chance to fall back (0.0 = never, 0.9 = always) (1.0 = no change)
-COMBAT_CLOSE_CIRCLE=0.5              ; Chance to circle target (0.0 = never, 0.9 = always) (1.0 = no change)
-COMBAT_CLOSE_DISENGAGE=0.5           ; Chance to disengage (0.0 = never, 0.9 = always) (1.0 = no change)
-COMBAT_CLOSE_FLANK=0.5               ; Chance to flank target (0.0 = never, 0.9 = always) (1.0 = no change)
-COMBAT_CLOSE_THROW_GRENADE=3         ; Minimum targets to consider throwing a grenade
+COMBATSTYLE_CLOSE_FALLBACK=0.5            ; Chance to fall back (0.0 = never, 0.9 = always) (1.0 = no change)
+COMBATSTYLE_CLOSE_CIRCLE=0.5              ; Chance to circle target (0.0 = never, 0.9 = always) (1.0 = no change)
+COMBATSTYLE_CLOSE_DISENGAGE=0.5           ; Chance to disengage (0.0 = never, 0.9 = always) (1.0 = no change)
+COMBATSTYLE_CLOSE_FLANK=0.5               ; Chance to flank target (0.0 = never, 0.9 = always) (1.0 = no change)
+COMBATSTYLE_CLOSE_THROW_GRENADE=3         ; Minimum targets to consider throwing a grenade
 ; Cover
-COMBAT_COVER_DISTANCE=0.5            ; Distance to search for cover (0.0 = close, 0.9 = far) (1.0 = no change)
+COMBATSTYLE_COVER_DISTANCE=0.5            ; Distance to search for cover (0.0 = close, 0.9 = far) (1.0 = no change)
 
 ; --- Companion Looting Settings ---
 ; Enable looting (hoovering) by companions.
@@ -86,36 +125,23 @@ COMBAT_COVER_DISTANCE=0.5            ; Distance to search for cover (0.0 = close
 ; Companions will not loot in settlements.
 ; Quest items, if flagged, are excluded automatically.
 ; Companions will stop looting when they reach their carry weight limit by default.
-LOOT_ENABLED=true                    ; Enable companion looting
-LOOT_COMBAT=false                    ; Loot when in combat
 LOOT_RADIUS=600.0                    ; Radius to search for lootable items around the companion, containers and corpses
-LOOT_JUNK=true                       ; Loot junk items
-LOOT_AMMO=true                       ; Loot ammunition
-LOOT_AID=true                        ; Loot aid items
-LOOT_GEAR=true                       ; Loot armor and weapons
 LOOT_MIN_VALUE=0                     ; Loot armor/weapons above this value
 LOOT_MAX_VALUE=9999                  ; Loot armor/weapons under this value
-LOOT_STEAL=false                     ; Commit a crime when looting items
-LOOT_WEIGHT_LIMIT=true               ; Companions stop looting when they reach their carry weight limit
 
 ; --- Companion XP Settings ---
 ; Enable XP gain for companion kills
-XP_ENABLED=true                      ; Enable XP gain from companion kills
 XP_RATIO=0.2                         ; Ratio for XP gain (0.0 = none, 1.0 = full XP)
-XP_KILLER_TOLERANCE=3000.0           ; Max distance from the companion to the victim to award XP
+XP_KILLER_TOLERANCE=2000.0           ; Max distance from the companion to the victim to award XP
 
 ; --- Companion Power Armor Settings ---
 ; Enable power armor repair for companions.
-PA_ENABLED=true                      ; Enable power armor repair for companions
 PA_REPAIR_AMOUNT=0.01                ; Amount of power armor condition repaired every update (0.0 - 1.0)
-
-; --- The settings below will modify companion stats permanently ---
 
 ; --- Companion Buff Settings ---
 ; Enable buff for companions.
 ; Those floor values are not overpowered and companions will outgrow them later in the game.
-BUFF_ENABLED=true                    ; Enable companion buffs
-BUFF_SET_VALUES=false                ; If enabled, the AV are set and not checked for minimum only
+BUFF_HEALTH=100.0                    ; Minimum health (basic NPC have 100.0)
 BUFF_HEAL_RATE=1.0                   ; Minimum heal rate (basic NPC have 1.0)
 BUFF_COMBAT_HEAL_RATE=1.0            ; Minimum Heal rate in combat (basic NPC have 0.0)
 BUFF_DAMAGE_RESIST=20.0              ; Minimum physical damage absorbed (basic NPC have 0.0)
@@ -134,13 +160,14 @@ BUFF_PERCEPTION=1.0                  ; Minimum perception (basic NPC have 0.0)
 BUFF_STRENGTH=1.0                    ; Minimum strength (basic NPC have 0.0)
 BUFF_SNEAK=30.0                      ; Minimum sneak (Sneak04 = 50.0) (basic NPC have 0.0)
 BUFF_CARRYWEIGHT=500.0               ; Minimum carry weight (basic NPC have 150.0)
+)";
 
+const char* defaultIni_part2 = R"(
 ; --- Companion Perk Settings ---
 ; Enable perk assignment and list of perk IDs to apply to companions.
 ; These perks will be stored in the save game.
 ; Some examples are commented by default to not make companions overpowered too early.
 ; Base perks to enable basic features.
-PERK_ENABLED=true                    ; Enable companion perk assignment
 PERK_TO_APPLY=0002A6FC               ; crNoFallDamage "crNoFallDamage" [PERK:0002A6FC] -> no fall damage
 PERK_TO_APPLY=000BA440               ; ModDetectionMovement [PERK:000BA440] -> needs to be added to companions to use the BUFF_SNEAK buff properly
 PERK_TO_APPLY=00245BE8               ; mod_armor_StealthMovePerk [PERK:00245BE8] -> 5% improved sneak movement speed
@@ -164,12 +191,9 @@ PERK_TO_APPLY=000FA292               ; PlayerBaseLockpick "Locksmith" [PERK:000F
 
 ; --- Companion Keyword Settings ---
 ; List of Keywords to add to companions
-KEYWORD_ENABLED=true                 ; Enable companion keyword assignment
 KEYWORD_TO_APPLY=001760E4            ; Followers_Command_HackTerminal_Allowed [KYWD:001760E4] -> allows hacking terminals
 KEYWORD_TO_APPLY=000F4B91            ; Followers_Command_LockPick_Allowed [KYWD:000F4B91] -> allows lockpicking
 ; Can be expanded here with more keywords as needed
-
-; --- Other settings ---
 
 ; --- Actor exclusion settings ---
 ; List of Actor base or reference FormIDs to exclude from mod as an example.
@@ -198,8 +222,11 @@ THREAT_ALERT_BONUS=1.0               ; alert status bonus
 ; Companion Faction ID
 ; CurrentCompanionFaction[FACT:00023C01]
 CURRENT_COMPANION_FACTION_ID=00023C01
-; ActorValue for HC downed state
+; ActorValues
 ACTORVALUE_HC_DOWNED_ID=00249F6D     ; 00249F6D HC_IsCompanionInNeedOfHealing
+ACTORVALUE_FOLLOWERSTATE_ID=00000344 ; 00000344 FollowerState
+ACTORVALUE_FOLLOWERDISTANCE_ID=00000345 ; 00000345 FollowerDistance
+ACTORVALUE_FOLLOWERSTANCE_ID=00000346 ; 00000346 FollowerStance
 ; Forms used by the mod
 ITEM_STIMPAK_ID=00023736             ; 00023736 Stimpak
 ITEM_REPAIRKIT_ID=00004f12           ; 00004f12 Repair Kit needs DLCRobot.esm
@@ -236,4 +263,33 @@ FORM_TYPE_LOOT=ALCH                  ; Chems/Food/Aid
 FORM_TYPE_LOOT=BOOK                  ; Magazines/Books
 FORM_TYPE_LOOT=KEYM                  ; Keys
 FORM_TYPE_LOOT=FURN                  ; Furniture
+; Follower AV and Global Variables
+; These AV are used to control follower commands and stances.
+; FollowerState	0x00000344	1.0	iFollower_Com_Follow	NPC actively follows player.
+; FollowerState	0x00000344	2.0	iFollower_Com_Wait	NPC stays at current position.
+; FollowerState	0x00000344	4.0	iFollower_Com_GoHome	NPC dismisses and returns to settlement.
+; FollowerDistance	0x00000345	0.0	iFollower_Dist_Near	NPC targets Command_Dist_Near (500 units).
+; FollowerDistance	0x00000345	1.0	iFollower_Dist_Medium	NPC targets Command_Dist_Medium (1000 units).
+; FollowerDistance	0x00000345	2.0	iFollower_Dist_Far	NPC targets Command_Dist_Far (1500 units).
+; FollowerStance	0x00000346	1.0	iFollower_Stance_Aggressive	NPC initiates combat with hostile targets.
+; FollowerStance	0x00000346	0.0	iFollower_Stance_Defensive	NPC only fights back if attacked.
+; Globals for follower commands
+GLOBAL_COM_FOLLOW_ID=0002A106       ; 0002A106 FollowersComFollow 1.0
+GLOBAL_COM_GOHOME_ID=0002A108       ; 0002A108 FollowersComGoHome 4.0
+GLOBAL_COM_WAIT_ID=0002A107         ; 0002A107 FollowersComWait 2.0
+GLOBAL_COM_DISTFAR_ENUM_ID=0002A10B       ; 0002A10B FollowersComDistFar 2.0
+GLOBAL_COM_DISTMEDIUM_ENUM_ID=0002A10A     ; 0002A10A FollowersComDistMedium 1.0
+GLOBAL_COM_DISTNEAR_ENUM_ID=0002A109     ; 0002A109 FollowersComDistNear 0.0
+; Follower stances
+GLOBAL_COM_STANCEAGGRO_ID=0002AE53    ; 0002AE53 FollowersComStanceAggro 1.0
+GLOBAL_COM_STANCECOMBATFALSE_ID=0002AE55 ; 0002AE55 FollowersComStanceCombatFalse 0.0
+GLOBAL_COM_STANCECOMBATTRUE_ID=0002AE56 ; 0002AE56 FollowersComStanceCombatTrue 1.0
+GLOBAL_COM_STANCEDEFENSIVE_ID=0002AE54 ; 0002AE54 FollowersComStanceDefensive 0.0
+; Follower distances
+GLOBAL_COM_DISTFAR_VAL_ID=000F0D06       ; 000F0D06 FollowersComDistFar 1500.0
+GLOBAL_COM_DISTMEDIUM_VAL_ID=000F0D05    ; 000F0D05 FollowersComDistMedium 1000.0
+GLOBAL_COM_DISTNEAR_VAL_ID=000F0D04      ; 000F0D04 FollowersComDistNear 500.0
 )";
+
+// Concatenate both parts into the final defaultIni string
+const std::string defaultIni = std::string(defaultIni_part1) + defaultIni_part2;

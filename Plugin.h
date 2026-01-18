@@ -115,6 +115,25 @@ struct EnemyAnalysis
     bool isLegendary;
 };
 
+// Follower ENUMs
+enum FOLLOWER_STATE : std::uint8_t
+{
+    FOLLOWER_STATE_FOLLOW = 1,  // iFollower_Com_Follow (1.0)
+    FOLLOWER_STATE_WAIT   = 2,  // iFollower_Com_Wait (2.0)
+    FOLLOWER_STATE_GO_HOME= 4   // iFollower_Com_GoHome (4.0)
+};
+enum FOLLOWER_DISTANCE : std::uint8_t
+{
+    FOLLOWER_DISTANCE_NEAR   = 0,  // iFollower_Dist_Near (0.0)
+    FOLLOWER_DISTANCE_MEDIUM = 1,  // iFollower_Dist_Medium (1.0)
+    FOLLOWER_DISTANCE_FAR    = 2   // iFollower_Dist_Far (2.0)
+};
+enum FOLLOWER_STANCE : std::uint8_t
+{
+    FOLLOWER_STANCE_DEFENSIVE = 0,
+    FOLLOWER_STANCE_AGGRESSIVE= 1
+};
+
 // Actor tracking data structure
 struct TrackedActorData
 {
@@ -139,6 +158,13 @@ struct TrackedActorData
     float velocity;                      // Current velocity
     int stuckCounter;                    // Consecutive stuck updates
     bool lost;                           // Whether actor is lost
+    bool overshoot;                      // Whether actor is overshooting target
+    // 0 follow, 1 wait, 2 go home
+    int followerState;                 // Follower state actor value
+    // 0 near, 1 medium, 2 far
+    int followerDistance;              // Follower distance actor value
+    // 0 defensive, 1 aggressive
+    int followerStance;                // Follower stance actor value
 };
 
 // Companion Movement task
@@ -179,6 +205,7 @@ namespace ActorTracking
         int stuckCounter = 0;
         bool stuck = false;
         bool lost = false;
+        bool overshoot = false;
     };
     // Fast per-companion flags (mutex only for map structural changes)
     extern std::mutex g_companionFlagsMutex;
@@ -196,6 +223,8 @@ namespace ActorTracking
     void GetActorLastPositionFast(RE::Actor* actor, RE::NiPoint3& outPos);
     bool GetActorLostStatusFast(RE::Actor* actor);
     void SetActorLostStatusFast(RE::Actor* actor, bool lost);
+    bool GetActorOvershootStatusFast(RE::Actor* actor);
+    void SetActorOvershootStatusFast(RE::Actor* actor, bool overshoot);
     // normal data tracking (mutex for entire data set)
     extern std::mutex g_actorDataMutex;
     extern std::vector<TrackedActorData> g_enemies;
@@ -346,6 +375,9 @@ private:
 void ActionCompanions_Internal(std::vector<TrackedActorData> companionData);
 RE::BGSInventoryItem* ActorAddInventoryItem_Internal(RE::Actor *actor, RE::TESForm *itemForm, std::int32_t count);
 void ActorRemoveInventoryItem_Internal(RE::Actor* actor, RE::TESForm* itemForm, std::int32_t count);
+void AdjustChatterFrequency_Internal(std::vector<TrackedActorData> companionData);
+void AdjustCombatStyle_Internal(std::vector<TrackedActorData> companionData);
+void AdjustGlobalFollowDistances_Internal();
 bool AIAccessTest_Internal(RE::TESNPC* npc);
 void ApplyAIAggression_Internal(std::vector<TrackedActorData> companionData);
 void ApplyPerksToCompanions_Internal(std::vector<TrackedActorData> companionData);
@@ -356,6 +388,7 @@ bool CheckActorHasItem_Internal(RE::Actor* actor, RE::TESForm* itemForm);
 ActorStateData CheckActorStates_Internal(RE::Actor* actor);
 bool CheckActorStatesMatch_Internal(RE::Actor* actor, std::uint32_t lifeStateFilter = 0xFF, std::uint32_t weaponStateFilter = 0xFF, std::uint32_t gunStateFilter = 0xFF, std::uint32_t interactingStateFilter = 0xFF);
 bool CheckIsCurrentCellEncounterZone_Internal();
+bool CheckIsCurrentCellInterior_Internal();
 bool CheckIsCurrentCellSettlement_Internal();
 TrackedActorData CreateTrackedData_Internal(RE::Actor* actor, ENEMY_TIER tier = ENEMY_TIER::LOW);
 EnemyAnalysis EnemyActorAnalyze_Internal(RE::Actor* actor);
@@ -376,9 +409,11 @@ std::uint32_t GetSlotMaskFromIndex_Internal(std::int32_t aiSlotIndex);
 void HealActorDowned_Internal(RE::Actor *actor);
 void HealActorLimbs_Internal(RE::Actor* actor);
 void HealActorHealth_Internal(RE::Actor* actor, float healthPercent);
-void HealActorPA_Internal(RE::Actor *actor);
+void HealActorPA_Internal(std::vector<TrackedActorData> companionData);
+std::size_t InitializeScrapItemComponents_Internal();
 void InitializeVariables_Internal();
 bool IsActorActiveCompanion_Internal(RE::Actor* actor);
+bool IsActorCommanded_Internal(RE::Actor* actor);
 bool IsActorEnemy_Internal(RE::Actor* actor);
 bool IsActorExcluded_Internal(RE::Actor* actor);
 bool IsActorInScene_Internal(RE::Actor* actor);
@@ -388,6 +423,8 @@ bool IsActorRaceHumanoid_Internal(RE::Actor* actor);
 bool IsActorRaceSynth_Internal(RE::Actor* actor);
 bool IsActorVendor_Internal(RE::Actor* actor);
 bool IsActorWeightLimit_Internal(RE::Actor* actor);
+bool IsArmorItem_Internal(RE::BGSInventoryItem invArmor);
+bool IsArmorItem_Internal(RE::TESObjectREFR* itemRef);
 bool IsArmorItem_Internal(RE::TESForm* itemForm);
 bool IsArmorPower_Internal(RE::TESObjectREFR* armor);
 bool IsArmorPower_Internal(RE::BGSInventoryItem* invArmor);
@@ -397,15 +434,17 @@ bool IsLootableFormType_Internal(RE::TESObjectREFR* source);
 bool IsLootAlways_Internal(RE::TESForm* itemForm);
 bool IsLootKeywordExcluded_Internal(RE::TESForm* itemForm);
 bool IsMenuOpen_Internal();
+bool IsWeaponItem_Internal(RE::BGSInventoryItem invItem);
+bool IsWeaponItem_Internal(RE::TESObjectREFR* itemRef);
 bool IsWeaponItem_Internal(RE::TESForm* itemForm);
 RE::TESObjectREFR::RemoveItemData LootBuildRemoveItemData_Internal(RE::BGSInventoryItem *aInventoryItem, RE::TESObjectREFR *aContainer, std::int32_t aCount);
 std::int32_t LootItems_Internal(std::vector<TrackedActorData> companionData);
-bool LootItemsWeaponLooseNearCorpse_Internal(RE::TESObjectREFR* source, RE::Actor* companion);
-bool LootItemsFromReference_Internal(RE::TESObjectREFR* source, RE::Actor* companion);
+void LootItemsBreakdown_Internal(std::vector<TrackedActorData> companionData);
+void LootItemsBreakdown_Internal(RE::Actor* companion);
+bool LootItemsFromReference_Internal(RE::TESObjectREFR* source, RE::Actor* companion, std::vector<RE::TESObjectREFR*> objectReferences);
 bool LootItemFilter_Internal(RE::TESForm* aForm);
+bool LootItemsWeaponLooseNearCorpse_Internal(RE::TESObjectREFR* source, RE::Actor* companion, std::vector<RE::TESObjectREFR*> objectReferences);
 void RemoveAIAggression_Internal(std::vector<TrackedActorData> companionData);
-void SetCompanionChatter_Internal(RE::Actor* comp);
-void SetCompanionCombatAI_Internal(RE::Actor* comp, RE::TESCombatStyle* combatStyle);
 void Update_Internal();
 std::int32_t UpdateGlobalActorArrays_Internal();
 
@@ -429,6 +468,33 @@ public:
     bool IsRunning() const { return running.load(); }
 private:
     std::atomic<bool> running;
+};
+// One-shot / delayed timer that schedules a task to run on the main thread
+namespace F4SE { class TaskInterface; }
+extern const F4SE::TaskInterface* g_taskInterface;
+class CCB_OneShotTimer {
+public:
+    CCB_OneShotTimer() : cancelled(false) {}
+    // Start the timer: delaySeconds before scheduling 'task' on the main thread.
+    void Start(int delaySeconds, std::function<void()> task) {
+        cancelled.store(false);
+        std::thread([this, delaySeconds, task = std::move(task)]() mutable {
+            std::this_thread::sleep_for(std::chrono::seconds(delaySeconds));
+            if (cancelled.load()) return;
+            if (g_taskInterface) {
+                // Enqueue on main-thread task queue
+                g_taskInterface->AddTask([task = std::move(task)]() {
+                    try { task(); } catch (...) {}
+                });
+            }
+        }).detach();
+    }
+    // Cancel the pending task before it fires
+    void Cancel() { cancelled.store(true); }
+    // Convenience to check if cancelled (optional)
+    bool IsCancelled() const { return cancelled.load(); }
+private:
+    std::atomic<bool> cancelled;
 };
 
 // --- PAPYRUS ---

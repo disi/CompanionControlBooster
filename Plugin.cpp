@@ -22,6 +22,8 @@ std::atomic<float> g_enemyMaxHealthInCell = 1.0f;
 // Global cell flags
 bool g_isInSettlement = false;
 bool g_isInEncounterZone = false;
+bool g_isInInterior = false;
+// Player state flags
 bool g_playerInCombat = false;
 bool g_playerIsSneaking = false;
 // Main thread work pending flag
@@ -30,13 +32,15 @@ std::atomic<bool> g_isMainThreadWorkPending = false;
 static std::mutex s_lastXpMutex;
 static std::chrono::steady_clock::time_point s_lastXpTime = std::chrono::steady_clock::now() - std::chrono::seconds(2);
 // Looted Items tracking
-std::unordered_set<RE::TESFormID> g_lootedItems;
+std::unordered_set<RE::TESFormID> g_lootedLooseWeapons;
+// Component to Scrap Item mapping
+std::unordered_map<RE::BGSComponent*, RE::TESObjectMISC*> g_componentToScrapMap;
 
 // --- EVENTS ---
 
 // Event handler for companion kill enemy events
 RE::BSEventNotifyControl CompanionKillEventSink::ProcessEvent(const RE::TESDeathEvent& a_event, RE::BSTEventSource<RE::TESDeathEvent>* a_eventSource) {
-    if (!XP_ENABLED)
+    if (!OTHER_SETTINGS || !XP_ENABLED)
         return RE::BSEventNotifyControl::kContinue;
     // Validate event data
     if (!a_event.actorDying || !a_event.actorKiller) {
@@ -146,7 +150,7 @@ void Update_Internal() {
             // Reset counter
             g_iniReloadCounter = 0;
             if (DEBUGGING)
-                REX::INFO("Update_Internal: Reloaded INI configuration.");
+                REX::INFO("Update_Internal: Reloaded MCM INI configuration.");
         }
     }
     // Initialize the global variables in case the game data wasn't ready yet
@@ -163,9 +167,11 @@ void Update_Internal() {
     // Check the current cell
     g_isInSettlement = CheckIsCurrentCellSettlement_Internal();
     g_isInEncounterZone = CheckIsCurrentCellEncounterZone_Internal();
+    g_isInInterior = CheckIsCurrentCellInterior_Internal();
     if (DEBUGGING) {
         REX::INFO("Update_Internal: Info - Current cell is {}a settlement.", g_isInSettlement ? "" : "not ");
         REX::INFO("Update_Internal: Info - Current cell is {}an encounter zone.", g_isInEncounterZone ? "" : "not ");
+        REX::INFO("Update_Internal: Info - Current cell is {}an interior.", g_isInInterior ? "" : "not ");
     }
     if (DEBUGGING)
         REX::INFO("-----------------------------------------------------------------------");
@@ -219,8 +225,29 @@ void Update_Internal() {
             g_playerIsSneaking = player->IsSneaking();
             if (DEBUGGING)
                 REX::INFO("Update_Internal: -------- Running functions on the main thread. --------");
-            // apply if AI Aggression is enabled and we are in an encounter zone or the player is in combat or sneaking with AI_AGGRESSION_SNEAK enabled
-            if (AI_AGGRESSION_ENABLED && ((g_isInEncounterZone && !g_isInSettlement) || g_playerInCombat || (AI_AGGRESSION_SNEAK && g_playerIsSneaking))) {
+            if (DEBUGGING) {
+                REX::INFO("Update_Internal: Info - Player is currently {}in combat.", g_playerInCombat ? "" : "not ");
+                REX::INFO("Update_Internal: Info - Player is currently {}sneaking.", g_playerIsSneaking ? "" : "not ");
+                REX::INFO("Companion Global values:");
+                REX::INFO("  - iFollower_Com_Follow: {}", g_globalComFollow ? g_globalComFollow->value : -1);
+                REX::INFO("  - iFollower_Com_GoHome: {}", g_globalComGoHome ? g_globalComGoHome->value : -1);
+                REX::INFO("  - iFollower_Com_Wait: {}", g_globalComWait ? g_globalComWait->value : -1);
+                REX::INFO("  - iFollower_Com_DistFar: {}", g_globalComDistFar ? g_globalComDistFar->value : -1);
+                REX::INFO("  - iFollower_Com_DistMedium: {}", g_globalComDistMedium ? g_globalComDistMedium->value : -1);
+                REX::INFO("  - iFollower_Com_DistNear: {}", g_globalComDistNear ? g_globalComDistNear->value : -1);
+                REX::INFO("  - iFollower_Stance_Aggressive: {}", g_globalComStanceAggro ? g_globalComStanceAggro->value : -1);
+                REX::INFO("  - iFollower_Stance_CombatFalse: {}", g_globalComStanceCombatFalse ? g_globalComStanceCombatFalse->value : -1);
+                REX::INFO("  - iFollower_Stance_CombatTrue: {}", g_globalComStanceCombatTrue ? g_globalComStanceCombatTrue->value : -1);
+                REX::INFO("  - iFollower_Stance_Defensive: {}", g_globalComStanceDefensive ? g_globalComStanceDefensive->value : -1);
+                REX::INFO("  - Command_Dist_Far: {}", g_globalComDistFarVal ? g_globalComDistFarVal->value : -1);
+                REX::INFO("  - Command_Dist_Medium: {}", g_globalComDistMediumVal ? g_globalComDistMediumVal->value : -1);
+                REX::INFO("  - Command_Dist_Near: {}", g_globalComDistNearVal ? g_globalComDistNearVal->value : -1);
+                REX::INFO("-----------------------------------------------------------------------");
+            }
+            // Apply AI Aggression if enabled
+            if ((COMBAT_SETTINGS && AI_AGGRESSION_ENABLED) && 
+                (g_playerInCombat || (AI_AGGRESSION_ZONEAWARE && g_isInEncounterZone) || !AI_AGGRESSION_ZONEAWARE) && 
+                ((AI_AGGRESSION_SNEAK && g_playerIsSneaking) || !g_playerIsSneaking)) {
                 if (DEBUGGING)
                     REX::INFO("-----------------------------------------------------------------------");
                 if (DEBUGGING)
@@ -237,7 +264,7 @@ void Update_Internal() {
                     REX::INFO("-----------------------------------------------------------------------");
             }
             // Buff Companions
-            if (BUFF_ENABLED) {
+            if (ATTRIBUTES_SETTINGS && BUFF_ENABLED) {
                 if (DEBUGGING)
                     REX::INFO("-----------------------------------------------------------------------");
                 if (DEBUGGING)
@@ -250,7 +277,7 @@ void Update_Internal() {
                 if (DEBUGGING)
                     REX::INFO("-----------------------------------------------------------------------");
             }
-            if (PERK_ENABLED) {
+            if (ATTRIBUTES_SETTINGS && PERK_ENABLED) {
                 if (DEBUGGING)
                     REX::INFO("-----------------------------------------------------------------------");
                 if (DEBUGGING)
@@ -259,7 +286,7 @@ void Update_Internal() {
                 if (DEBUGGING)
                     REX::INFO("-----------------------------------------------------------------------");
             }
-            if (KEYWORD_ENABLED) {
+            if (ATTRIBUTES_SETTINGS && KEYWORD_ENABLED) {
                 if (DEBUGGING)
                     REX::INFO("-----------------------------------------------------------------------");
                 if (DEBUGGING)
@@ -269,7 +296,7 @@ void Update_Internal() {
                     REX::INFO("-----------------------------------------------------------------------");
             }
             // Loot items by companions if enabled and not in settlement and the player is not in a menu (like container or inventory)
-            if (LOOT_ENABLED && !g_isInSettlement) {
+            if (LOOTING_SETTINGS && LOOT_ENABLED && !g_isInSettlement) {
                 if (DEBUGGING)
                     REX::INFO("-----------------------------------------------------------------------");
                 if (DEBUGGING)
@@ -280,8 +307,18 @@ void Update_Internal() {
                 if (DEBUGGING)
                     REX::INFO("-----------------------------------------------------------------------");
             }
+            // Breakdown JUNK items into components for companion inventories
+            if (LOOTING_SETTINGS && LOOT_JUNK_BREAKDOWN) {
+                if (DEBUGGING)
+                    REX::INFO("-----------------------------------------------------------------------");
+                if (DEBUGGING)
+                    REX::INFO("Update_Internal: Loot Breakdown - Breaking down JUNK items into components for companions...");
+                LootItemsBreakdown_Internal(companionData);
+                if (DEBUGGING)
+                    REX::INFO("-----------------------------------------------------------------------");
+            }
             // Equip best items for companions
-            if (AI_EQUIP_ARMOR || AI_EQUIP_WEAPON || AI_EQUIP_AMMO_REFILL) {
+            if (OTHER_SETTINGS && (AI_EQUIP_ARMOR || AI_EQUIP_WEAPON)) {
                 if (DEBUGGING)
                     REX::INFO("-----------------------------------------------------------------------");
                 if (AI_EQUIP_ARMOR || AI_EQUIP_WEAPON) {
@@ -289,15 +326,60 @@ void Update_Internal() {
                         REX::INFO("Update_Internal: Equip - Equipping best armor and weapons for companions...");
                     EquipCompanions_Internal(companionData);
                 }
-                if (AI_EQUIP_AMMO_REFILL) {
-                    if (DEBUGGING)
-                        REX::INFO("Update_Internal: Equip - Equipping ammunition for companions...");
-                    EquipAmmunition_Internal(companionData);
-                }
                 if (DEBUGGING)
                     REX::INFO("-----------------------------------------------------------------------");
             }
-            if ((g_isInEncounterZone && !g_isInSettlement) || g_playerInCombat) {
+            if (COMBAT_SETTINGS && AI_EQUIP_AMMO_REFILL) {
+                if (DEBUGGING)
+                    REX::INFO("-----------------------------------------------------------------------");
+                if (DEBUGGING)
+                    REX::INFO("Update_Internal: Equip - Equipping ammunition for companions...");
+                EquipAmmunition_Internal(companionData);
+                if (DEBUGGING)
+                    REX::INFO("-----------------------------------------------------------------------");
+            }
+            // Adjust Combatstyle settings for companions
+            if (COMBAT_SETTINGS && COMBATSTYLE_ENABLED) {
+                if (DEBUGGING)
+                    REX::INFO("-----------------------------------------------------------------------");
+                if (DEBUGGING)
+                    REX::INFO("Update_Internal: Combatstyle - Adjusting combatstyle settings for companions...");
+                AdjustCombatStyle_Internal(companionData);
+                if (DEBUGGING)
+                    REX::INFO("-----------------------------------------------------------------------");
+            }
+            // Repair Power Armor if enabled
+            if (COMBAT_SETTINGS && PA_ENABLED) {
+                if (DEBUGGING)
+                    REX::INFO("-----------------------------------------------------------------------");
+                if (DEBUGGING)
+                    REX::INFO("Update_Internal: Power Armor Repair - Repairing Power Armor for companions...");
+                HealActorPA_Internal(companionData);
+                if (DEBUGGING)
+                    REX::INFO("-----------------------------------------------------------------------");
+            }
+            // Adjust global follow distances
+            if (FOLLOW_SETTINGS && AI_DISTANCE_ENABLED) {
+                if (DEBUGGING)
+                    REX::INFO("-----------------------------------------------------------------------");
+                if (DEBUGGING)
+                    REX::INFO("Update_Internal: Follow Distance - Adjusting global follow distances for near, medium and far...");
+                AdjustGlobalFollowDistances_Internal();
+                if (DEBUGGING)
+                    REX::INFO("-----------------------------------------------------------------------");
+            }
+            // Adjust Chatter frequency
+            if (OTHER_SETTINGS && CHATTER_ENABLED) {
+                if (DEBUGGING)
+                    REX::INFO("-----------------------------------------------------------------------");
+                if (DEBUGGING)
+                    REX::INFO("Update_Internal: Chatter - Adjusting chatter frequency...");
+                AdjustChatterFrequency_Internal(companionData);
+                if (DEBUGGING)
+                    REX::INFO("-----------------------------------------------------------------------");
+            }
+            // Action Companions if not in settlement or if the player is in combat
+            if (!g_isInSettlement || g_playerInCombat) {
                 // Action Companions based on their states
                 if (DEBUGGING)
                     REX::INFO("-----------------------------------------------------------------------");
@@ -344,7 +426,7 @@ void ActionCompanions_Internal(std::vector<TrackedActorData> companionData) {
         if (CheckActorStatesMatch_Internal(comp, ACTOR_STATE::DEAD, ACTOR_STATE::ANY, ACTOR_STATE::ANY, ACTOR_STATE::ANY) 
             || CheckActorStatesMatch_Internal(comp, ACTOR_STATE::BLEEDOUT, ACTOR_STATE::ANY, ACTOR_STATE::ANY, ACTOR_STATE::ANY) 
             || CheckActorStatesMatch_Internal(comp, ACTOR_STATE::ESSENTIAL_DOWN, ACTOR_STATE::ANY, ACTOR_STATE::ANY, ACTOR_STATE::ANY)) {
-            if (AI_AUTO_REVIVE) {
+            if (COMBAT_SETTINGS && AI_AUTO_REVIVE) {
                 // Attempt to revive the companion
                 if (companion.usesStimpak) {
                     auto* invStimpak = ActorAddInventoryItem_Internal(comp, g_itemStimpak, 1);
@@ -405,6 +487,9 @@ void ActionCompanions_Internal(std::vector<TrackedActorData> companionData) {
             }
             REX::INFO("ActionCompanions_Internal: Logging - The companions velocity is {:.2f} and is currently stuck: {}", ActorTracking::GetActorVelocityFast(comp), ActorTracking::GetActorStuckStatusFast(comp) ? "yes" : "no");
             REX::INFO("ActionCompanions_Internal: Logging - The companion is stuck for {} updates.", ActorTracking::GetActorStuckCounterFast(comp));
+            REX::INFO("ActionCompanions_Internal: Logging - The companion is overshooting {}", companion.overshoot ? "yes" : "no");
+            REX::INFO("ActionCompanions_Internal: Logging - The companion AI current follow state is {}", companion.followerState);
+            REX::INFO("ActionCompanions_Internal: Logging - The companion AI current follow distance is {}", companion.followerDistance);
         }
         // Check if interacting
         if (CheckActorStatesMatch_Internal(comp, ACTOR_STATE::ALIVE, ACTOR_STATE::ANY, ACTOR_STATE::ANY, ACTOR_STATE::INTERACTING)) {
@@ -413,7 +498,7 @@ void ActionCompanions_Internal(std::vector<TrackedActorData> companionData) {
             continue;
         }
         // Stimpak: The companion is in combat or alerted and low on health
-        if (companion.isAlerted && companion.healthPercent * 100.0f <= AI_HEALTH_THRESHOLD && AI_USE_STIMPAK_ENABLED) {
+        if (COMBAT_SETTINGS && AI_USE_STIMPAK_ENABLED && companion.isAlerted && companion.healthPercent * 100.0f <= AI_HEALTH_THRESHOLD) {
             if (DEBUGGING)
                 REX::INFO("ActionCompanions_Internal: Stimpak - Companion {} is alerted and low on health ({:.1f}%), checking for Stimpak or repair kit use...", comp->GetDisplayFullName(), companion.healthPercent * 100.0f);
             if (AI_USE_STIMPAK_UNLIMITED || (CheckActorHasItem_Internal(comp, g_itemStimpak) && companion.usesStimpak) || (CheckActorHasItem_Internal(comp, g_itemRepairKit) && !companion.usesStimpak)) {
@@ -441,38 +526,15 @@ void ActionCompanions_Internal(std::vector<TrackedActorData> companionData) {
                 }
             }
         }
-        // Power Armor healing
-        if (PA_ENABLED) {
-            if (RE::PowerArmor::ActorInPowerArmor(*comp)) {
-                if (DEBUGGING)
-                    REX::INFO("ActionCompanions_Internal: Power Armor - Healing companion {} in Power Armor...", comp->GetDisplayFullName());
-                HealActorPA_Internal(comp);
-            }
-        }
-        // Chatter multiplier adjustment
-        if (CHATTER_ENABLED) {
-            if (DEBUGGING)
-                REX::INFO("ActionCompanions_Internal: Chatter - Setting chatter multiplier for companion {}...", comp->GetDisplayFullName());
-            SetCompanionChatter_Internal(comp);
-        }
-        // Set Combat AI only if enabled
-        if (COMBAT_ENABLED) {
-            if (DEBUGGING)
-                REX::INFO("ActionCompanions_Internal: Combat AI - Setting combat AI for companion {}...", comp->GetDisplayFullName());
-            auto* compCombatStyle = comp->GetCombatStyle();
-            if (compCombatStyle) {
-                SetCompanionCombatAI_Internal(comp, compCombatStyle);
-            }
-        }
         // Handle combat target setting
-        if (companion.isAlerted && COMBAT_ENABLED) {
+        if (COMBAT_SETTINGS && COMBATSTYLE_ENABLED && companion.isAlerted) {
             if (DEBUGGING)
                 REX::INFO("ActionCompanions_Internal: Combat Target - Setting target for companion {}...", comp->GetDisplayFullName());
             // Set target for the companion if in combat
             if (companion.isAlerted) {
                 auto enemyDataCopy = ActorTracking::GetEnemyData();
                 RE::Actor* enemyToTarget = nullptr;
-                switch (COMBAT_TARGET) {
+                switch (COMBATSTYLE_TARGET) {
                 case 0: { // closest target
                     float closestDistance = FLT_MAX;
                     for (auto& enemyData : enemyDataCopy) {
@@ -553,7 +615,44 @@ void ActionCompanions_Internal(std::vector<TrackedActorData> companionData) {
                 continue;
             }
         }
-        if (AI_STUCK_CHECK) {
+        		// Continue early if the companion is commanded or not following at the moment
+        if (IsActorCommanded_Internal(comp) || companion.followerState != FOLLOWER_STATE::FOLLOWER_STATE_FOLLOW) {
+            if (DEBUGGING)
+                REX::INFO("ActionCompanions_Internal: Follow, Distance, Speed and Stuck - Companion {} is currently not following, skipping.", comp->GetDisplayFullName());
+            // Remove from movement task list
+            MovementSystem::RemoveCompanionTask(comp);
+            continue;
+        }
+        // Adjust follow distances according to settings and interior/exterior
+        if (FOLLOW_SETTINGS && AI_DISTANCE_ENABLED) {
+            // Adjust actor follower distance AV based on interior/exterior
+            if (companion.followerDistance != AI_FOLLOW_DISTANCE_INTERIORS && g_isInInterior) {
+                if (DEBUGGING)
+                    REX::INFO("ActionCompanions_Internal: Follow Distance - Setting interior follow distance for companion {}...", comp->GetDisplayFullName());
+                companion.actor->SetActorValue(*g_actorValueFollowerDistance, AI_FOLLOW_DISTANCE_INTERIORS);
+            } else if (companion.followerDistance != AI_FOLLOW_DISTANCE_GENERAL && !g_isInInterior) {
+                if (DEBUGGING)
+                    REX::INFO("ActionCompanions_Internal: Follow Distance - Setting exterior follow distance for companion {}...", comp->GetDisplayFullName());
+                companion.actor->SetActorValue(*g_actorValueFollowerDistance, AI_FOLLOW_DISTANCE_GENERAL);
+            }
+        }
+		// Handle companion speed adjustments based on distance to player
+        if (FOLLOW_SETTINGS && AI_SPEED_ENABLED) {
+            auto speedMultAV = g_actorValueSingleton->speedMult;
+            float currentSpeedMult = companion.actor->GetActorValue(*speedMultAV);
+            // Companion is far away from player, increase speed (default 1500.0f)
+            if (companion.distanceToPlayer > g_globalComDistFarVal->value && currentSpeedMult < AI_FOLLOW_SPEED_FAR) {
+                comp->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, *speedMultAV, AI_FOLLOW_SPEED_FAR);
+            // Companion is at medium distance, set speed to medium (default 1000.0f)
+            } else if (companion.distanceToPlayer > g_globalComDistMediumVal->value && currentSpeedMult < AI_FOLLOW_SPEED_MEDIUM) {
+                comp->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, *speedMultAV, AI_FOLLOW_SPEED_MEDIUM);
+            // Companion is near the player, set speed to normal (default 500.0f)
+            } else {
+                comp->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, *speedMultAV, AI_FOLLOW_SPEED_NEAR);
+            }
+        }
+        // Add or remove from movement task list for stuck checking
+        if (FOLLOW_SETTINGS && AI_STUCK_ENABLED) {
             // Add the companion to the movement task list for the next UPDATE_INTERVAL seconds
             if (DEBUGGING)
                 REX::INFO("ActionCompanions_Internal: Stuck Check - Adding companion {} to movement task list for stuck checking.", comp->GetDisplayFullName());
@@ -563,7 +662,7 @@ void ActionCompanions_Internal(std::vector<TrackedActorData> companionData) {
             MovementSystem::RemoveCompanionTask(comp);
         }
         // Handle lost behaviour or stuck for more than 1 update (teleport to player)
-        if ((companion.lost || companion.distanceToPlayer > AI_STUCK_DISTANCE) && AI_STUCK_CHECK) {
+        if (FOLLOW_SETTINGS && AI_STUCK_ENABLED && (companion.lost || companion.distanceToPlayer > (AI_FOLLOW_DISTANCE_FAR * 2.0f))) {
             if (DEBUGGING)
                 REX::INFO("ActionCompanions_Internal: Lost - Companion {} is lost - teleporting to player!", comp->GetDisplayFullName());
             if (player) {
@@ -582,24 +681,54 @@ void ActionCompanions_Internal(std::vector<TrackedActorData> companionData) {
                 newPos.y = player->GetPosition().y + radius * std::sin(angle);
                 // Find a good Z position
                 newPos.z = player->GetPosition().z; // start with the player's Z
-                // Get collision filter of the companion
-                //auto filter = comp->GetCollisionFilter(); // Crashes in 1.10.984 and 1.11.191
-                // Create default collision filter instead of crashing GetCollisionFilter()
-                RE::CFilter filter;
-                filter.filter = 0x0000002C; // Default character controller collision layer
-                // Get the xy position to a close object (position, filter, radiant steps, scan distance, move up distance)
-                RE::NiPoint3 closePos = GetPointXY_Internal(newPos, filter, 100.0f, 500.0f, 60.0f);
-                // Get ground Z at new position + 1.0f
-                newPos.z = GetPointZ_Internal(newPos, filter, 100.0f, 500.0f) + 1.0f; // Scan 100 units up and 500 units down and add 1.0f to spawn Slightly above ground to pick up new navmesh
+                // Check runtime module for version-specific handling
+                if (MODULE_NAME == "CCBCL.dll") {
+                    // Use the original version-specific code (keep collision checks / navmesh scans)
+                    RE::CFilter filter;
+                    filter.filter = player->GetCollisionFilter().filter;
+                    // Get the xy position to a close object (position, filter, radiant steps, scan distance, move up distance)
+                    RE::NiPoint3 closePos = GetPointXY_Internal(newPos, filter, 100.0f, 500.0f, 60.0f);
+                    // Get ground Z at new position + 1.0f
+                    newPos.z = GetPointZ_Internal(newPos, filter, 100.0f, 500.0f) + 1.0f; // Scan 100 up, 500 down
+                } else {
+                    // Simpler fallback for other runtimes to avoid crashes
+                    // Keep player's Z and rely on 75% radius XY placement (avoid GetPointZ_Internal/collision calls)
+                    // newPos.z is already set to player's Z above.
+                }
                 // Nudge any running idles or stances to stop them
                 if (comp->currentProcess)
                     comp->currentProcess->StopCurrentIdle(comp, true, true);
                 // Set new position
                 comp->SetPosition(newPos, true);
             }
-            // Reset flags after teleporting
-            ActorTracking::SetActorLostStatusFast(comp, false);
-            ActorTracking::SetActorStuckCounterFast(comp, 0);
+            continue;
+        }
+        // Handle overshoot behaviour (change follower AVs for distance temporarily)
+        if (FOLLOW_SETTINGS && AI_STUCK_ENABLED && companion.overshoot) {
+            if (DEBUGGING)
+                REX::INFO("ActionCompanions_Internal: Overshoot - Companion {} handling overshoot behaviour...", comp->GetDisplayFullName());
+            // Store original follower state
+            auto originalFollowerState = companion.actor->GetActorValue(*g_actorValueFollowerState);
+            // Ensure the companion is in FOLLOW state and restore exact state after delay
+            // the original may be 0 shortly after loading a save, so only restore if it was FOLLOW
+            if (static_cast<int>(originalFollowerState) == FOLLOWER_STATE::FOLLOWER_STATE_FOLLOW) {
+                // Tell the comapnion to wait and stop it in its tracks
+                companion.actor->SetActorValue(*g_actorValueFollowerState, FOLLOWER_STATE::FOLLOWER_STATE_WAIT);
+                // Schedule CCB_OneShotTimer to reset the overshoot flag after 1 second
+                auto resetAVTimer = std::make_shared<CCB_OneShotTimer>();
+                int delaySecs = 1;
+                // Pass all variables to keep them alive in the lambda
+                resetAVTimer->Start(delaySecs, [resetAVTimer, comp, originalFollowerState, delaySecs]() {
+                    if (comp) {
+                        if (DEBUGGING)
+                            REX::INFO("ActionCompanions_Internal: Overshoot - Resetting overshoot status for companion {} after {}s duration.", comp->GetDisplayFullName(), delaySecs);
+                        // Check in case the companion was removed in the meantime
+                        comp->SetActorValue(*g_actorValueFollowerState, originalFollowerState);
+                        ActorTracking::SetActorOvershootStatusFast(comp, false);
+                    }
+                    resetAVTimer->Cancel(); // optional cleanup
+                });
+            }
             continue;
         }
     }
@@ -649,6 +778,141 @@ void ActorRemoveInventoryItem_Internal(RE::Actor* actor, RE::TESForm* itemForm, 
     auto result = actor->RemoveItem(data);
 }
 
+// Helper function to adjust chatter frequency
+void AdjustChatterFrequency_Internal(std::vector<TrackedActorData> companionData) {
+    if (companionData.empty())
+        return;
+    for (auto companion : companionData) {
+        auto* comp = companion.actor;
+        if (!comp)
+            return;
+        // Get current idle chatter AV values
+        auto* idleChatterMinAV = g_actorValueSingleton->idleChatterTimeMin;
+        auto* idleChatterMaxAV = g_actorValueSingleton->idleChatterTimeMAx;
+        auto idleChatterMin = comp->GetActorValue(*idleChatterMinAV);
+        auto idleChatterMax = comp->GetActorValue(*idleChatterMaxAV);
+        auto idleChatterBaseMin = comp->GetBaseActorValue(*idleChatterMinAV);
+        auto idleChatterBaseMax = comp->GetBaseActorValue(*idleChatterMaxAV);
+        float targetMin = 0.0f;
+        float targetMax = 0.0f;
+        // Adjust based on sneaking status
+        if (comp->IsSneaking()) {
+            targetMin = idleChatterBaseMin * CHATTER_MULTIPLIER_SNEAK;
+            targetMax = idleChatterBaseMax * CHATTER_MULTIPLIER_SNEAK;
+        } else {
+            targetMin = idleChatterBaseMin * CHATTER_MULTIPLIER;
+            targetMax = idleChatterBaseMax * CHATTER_MULTIPLIER;
+        }
+        // Apply changes if different from current
+        if (std::abs(idleChatterMin - targetMin) > 0.1f) {
+            comp->SetActorValue(*idleChatterMinAV, targetMin);
+        }
+        if (std::abs(idleChatterMax - targetMax) > 0.1f) {
+            comp->SetActorValue(*idleChatterMaxAV, targetMax);
+        }
+    }
+}
+
+// Helper function to set companion combat AI parameters
+void AdjustCombatStyle_Internal(std::vector<TrackedActorData> companionData) {
+    if (companionData.empty())
+        return;
+    for (auto& companion : companionData) {
+        auto* comp = companion.actor;
+        if (!comp)
+            continue;
+        auto combatStyle = comp->GetCombatStyle();
+        if (!combatStyle)
+            return;
+        /* // General
+        if (DEBUGGING) REX::INFO("SetCompanionCombatAI_Internal: Setting combat style for companion {}", comp->GetDisplayFullName());
+        if (DEBUGGING) REX::INFO(" - Current Offensive Multiplier: {}", combatStyle->generalData.offensiveMult);
+        if (DEBUGGING) REX::INFO(" - Current Defensive Multiplier: {}", combatStyle->generalData.defensiveMult);
+        if (DEBUGGING) REX::INFO(" - Current Ranged Score Multiplier: {}", combatStyle->generalData.rangedScoreMult);
+        if (DEBUGGING) REX::INFO(" - Current Melee Score Multiplier: {}", combatStyle->generalData.meleeScoreMult);
+        // Ranged
+        if (DEBUGGING) REX::INFO(" - Current Ranged Adjust Range Multiplier: {}", combatStyle->longRangeData.adjustRangeMult);
+        if (DEBUGGING) REX::INFO(" - Current Ranged Crouch Multiplier: {}", combatStyle->longRangeData.crouchMult);
+        if (DEBUGGING) REX::INFO(" - Current Ranged Strafe Multiplier: {}", combatStyle->longRangeData.strafeMult);
+        if (DEBUGGING) REX::INFO(" - Current Ranged Wait Multiplier: {}", combatStyle->longRangeData.waitMult);
+        if (DEBUGGING) REX::INFO(" - Current Ranged Accuracy Multiplier: {}", combatStyle->rangedData.accuracyMult);
+        // Close-Quarters
+        if (DEBUGGING) REX::INFO(" - Current Close Fallback Multiplier: {}", combatStyle->closeRangeData.fallbackMult);
+        if (DEBUGGING) REX::INFO(" - Current Close Circle Multiplier: {}", combatStyle->closeRangeData.circleMult);
+        if (DEBUGGING) REX::INFO(" - Current Close Disengage Probability: {}", combatStyle->closeRangeData.disengageProbability);
+        if (DEBUGGING) REX::INFO(" - Current Close Flank Variance Multiplier: {}", combatStyle->closeRangeData.flankVarianceMult);
+        if (DEBUGGING) REX::INFO(" - Current Close Throw Max Targets: {}", combatStyle->closeRangeData.throwMaxTargets);
+        // Cover
+        if (DEBUGGING) REX::INFO(" - Current Cover Search Distance Multiplier: {}", combatStyle->coverData.coverSearchDistanceMult); */
+        // Apply new settings from INI
+        if (combatStyle->generalData.offensiveMult != COMBATSTYLE_OFFENSIVE && COMBATSTYLE_OFFENSIVE != 1.0f)
+            combatStyle->generalData.offensiveMult = COMBATSTYLE_OFFENSIVE;
+        if (combatStyle->generalData.defensiveMult != COMBATSTYLE_DEFENSIVE && COMBATSTYLE_DEFENSIVE != 1.0f)
+            combatStyle->generalData.defensiveMult = COMBATSTYLE_DEFENSIVE;
+        if (combatStyle->generalData.rangedScoreMult != COMBATSTYLE_RANGED_WEAPON && COMBATSTYLE_RANGED_WEAPON != 1.0f)
+            combatStyle->generalData.rangedScoreMult = COMBATSTYLE_RANGED_WEAPON;
+        if (combatStyle->generalData.meleeScoreMult != COMBATSTYLE_MELEE_WEAPON && COMBATSTYLE_MELEE_WEAPON != 1.0f)
+            combatStyle->generalData.meleeScoreMult = COMBATSTYLE_MELEE_WEAPON;
+        // Ranged
+        if (combatStyle->longRangeData.adjustRangeMult != COMBATSTYLE_RANGED_ADJUSTMENT && COMBATSTYLE_RANGED_ADJUSTMENT != 1.0f)
+            combatStyle->longRangeData.adjustRangeMult = COMBATSTYLE_RANGED_ADJUSTMENT;
+        if (combatStyle->longRangeData.crouchMult != COMBATSTYLE_RANGED_CROUCHING && COMBATSTYLE_RANGED_CROUCHING != 1.0f)
+            combatStyle->longRangeData.crouchMult = COMBATSTYLE_RANGED_CROUCHING;
+        if (combatStyle->longRangeData.strafeMult != COMBATSTYLE_RANGED_STRAFE && COMBATSTYLE_RANGED_STRAFE != 1.0f)
+            combatStyle->longRangeData.strafeMult = COMBATSTYLE_RANGED_STRAFE;
+        if (combatStyle->longRangeData.waitMult != COMBATSTYLE_RANGED_WAITING && COMBATSTYLE_RANGED_WAITING != 1.0f)
+            combatStyle->longRangeData.waitMult = COMBATSTYLE_RANGED_WAITING;
+        if (combatStyle->rangedData.accuracyMult != COMBATSTYLE_RANGED_ACCURACY && COMBATSTYLE_RANGED_ACCURACY != 1.0f)
+            combatStyle->rangedData.accuracyMult = COMBATSTYLE_RANGED_ACCURACY;
+        // Close-Quarters
+        if (combatStyle->closeRangeData.fallbackMult != COMBATSTYLE_CLOSE_FALLBACK && COMBATSTYLE_CLOSE_FALLBACK != 1.0f)
+            combatStyle->closeRangeData.fallbackMult = COMBATSTYLE_CLOSE_FALLBACK;
+        if (combatStyle->closeRangeData.circleMult != COMBATSTYLE_CLOSE_CIRCLE && COMBATSTYLE_CLOSE_CIRCLE != 1.0f)
+            combatStyle->closeRangeData.circleMult = COMBATSTYLE_CLOSE_CIRCLE;
+        if (combatStyle->closeRangeData.disengageProbability != COMBATSTYLE_CLOSE_DISENGAGE && COMBATSTYLE_CLOSE_DISENGAGE != 1.0f)
+            combatStyle->closeRangeData.disengageProbability = COMBATSTYLE_CLOSE_DISENGAGE;
+        if (combatStyle->closeRangeData.flankVarianceMult != COMBATSTYLE_CLOSE_FLANK && COMBATSTYLE_CLOSE_FLANK != 1.0f)
+            combatStyle->closeRangeData.flankVarianceMult = COMBATSTYLE_CLOSE_FLANK;
+        if (combatStyle->closeRangeData.throwMaxTargets != COMBATSTYLE_CLOSE_THROW_GRENADE && COMBATSTYLE_CLOSE_THROW_GRENADE != 1.0f)
+            combatStyle->closeRangeData.throwMaxTargets = COMBATSTYLE_CLOSE_THROW_GRENADE;
+        // Cover
+        if (combatStyle->coverData.coverSearchDistanceMult != COMBATSTYLE_COVER_DISTANCE && COMBATSTYLE_COVER_DISTANCE != 1.0f)
+            combatStyle->coverData.coverSearchDistanceMult = COMBATSTYLE_COVER_DISTANCE;
+        /* if (DEBUGGING) REX::INFO("SetCompanionCombatAI_Internal: Combat style for companion {} updated.", comp->GetDisplayFullName());
+        if (DEBUGGING) REX::INFO(" - New Offensive Multiplier: {}", combatStyle->generalData.offensiveMult);
+        if (DEBUGGING) REX::INFO(" - New Defensive Multiplier: {}", combatStyle->generalData.defensiveMult);
+        if (DEBUGGING) REX::INFO(" - New Ranged Score Multiplier: {}", combatStyle->generalData.rangedScoreMult);
+        if (DEBUGGING) REX::INFO(" - New Melee Score Multiplier: {}", combatStyle->generalData.meleeScoreMult);
+        // Ranged
+        if (DEBUGGING) REX::INFO(" - New Ranged Adjust Range Multiplier: {}", combatStyle->longRangeData.adjustRangeMult);
+        if (DEBUGGING) REX::INFO(" - New Ranged Crouch Multiplier: {}", combatStyle->longRangeData.crouchMult);
+        if (DEBUGGING) REX::INFO(" - New Ranged Strafe Multiplier: {}", combatStyle->longRangeData.strafeMult);
+        if (DEBUGGING) REX::INFO(" - New Ranged Wait Multiplier: {}", combatStyle->longRangeData.waitMult);
+        if (DEBUGGING) REX::INFO(" - New Ranged Accuracy Multiplier: {}", combatStyle->rangedData.accuracyMult);
+        // Close-Quarters
+        if (DEBUGGING) REX::INFO(" - New Close Fallback Multiplier: {}", combatStyle->closeRangeData.fallbackMult);
+        if (DEBUGGING) REX::INFO(" - New Close Circle Multiplier: {}", combatStyle->closeRangeData.circleMult);
+        if (DEBUGGING) REX::INFO(" - New Close Disengage Probability: {}", combatStyle->closeRangeData.disengageProbability);
+        if (DEBUGGING) REX::INFO(" - New Close Flank Variance Multiplier: {}", combatStyle->closeRangeData.flankVarianceMult);
+        if (DEBUGGING) REX::INFO(" - New Close Throw Max Targets: {}", combatStyle->closeRangeData.throwMaxTargets);
+        // Cover
+        if (DEBUGGING) REX::INFO(" - New Cover Search Distance Multiplier: {}", combatStyle->coverData.coverSearchDistanceMult); */
+    }
+}
+
+// Helper function to adjust global follow distances
+void AdjustGlobalFollowDistances_Internal() {
+    if (g_globalComDistNearVal && g_globalComDistNearVal->value != static_cast<float>(AI_FOLLOW_DISTANCE_NEAR)) {
+        g_globalComDistNearVal->value = static_cast<float>(AI_FOLLOW_DISTANCE_NEAR);
+    }
+    if (g_globalComDistMediumVal && g_globalComDistMediumVal->value != static_cast<float>(AI_FOLLOW_DISTANCE_MEDIUM)) {
+        g_globalComDistMediumVal->value = static_cast<float>(AI_FOLLOW_DISTANCE_MEDIUM);
+    }
+    if (g_globalComDistFarVal && g_globalComDistFarVal->value != static_cast<float>(AI_FOLLOW_DISTANCE_FAR)) {
+        g_globalComDistFarVal->value = static_cast<float>(AI_FOLLOW_DISTANCE_FAR);
+    }
+}
+
 // Helper function to safely test if aiData is accessible (SEH-protected)
 bool AIAccessTest_Internal(RE::TESNPC* npc) {
     if (!npc)
@@ -675,6 +939,12 @@ void ApplyAIAggression_Internal(std::vector<TrackedActorData> companionData) {
         auto* actor = companion.actor;
         if (!actor)
             continue;
+        // Change the actor value to be aggressive
+        if (static_cast<int>(actor->GetActorValue(*g_actorValueFollowerStance)) != FOLLOWER_STANCE::FOLLOWER_STANCE_AGGRESSIVE) {
+            actor->SetActorValue(*g_actorValueFollowerStance, static_cast<float>(FOLLOWER_STANCE::FOLLOWER_STANCE_AGGRESSIVE));
+            if (DEBUGGING)
+                REX::INFO("ApplyAIAggression_Internal: Setting follower stance to aggressive {} for companion {}.", static_cast<float>(FOLLOWER_STANCE::FOLLOWER_STANCE_AGGRESSIVE), actor->GetDisplayFullName());
+        }
         if (companion.isAlerted)
             continue; // do not apply when already in combat
         auto* npc = actor->GetNPC();
@@ -751,6 +1021,23 @@ void BuffCompanionsMinValues_Internal(std::vector<TrackedActorData> companionDat
         auto* actor = companion.actor;
         if (!actor)
             continue;
+        // Health Buff
+        auto* healthAV = g_actorValueSingleton->health;
+        if (healthAV) {
+            float currentHealth = actor->GetActorValue(*healthAV);
+            if (currentHealth < BUFF_HEALTH) {
+                // Calculate exactly how much we need to add to hit the floor
+                float missingAmount = BUFF_HEALTH - currentHealth;
+                // Add health buff based on BUFF_HEALTH
+                actor->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, *healthAV, missingAmount);
+                currentHealth = actor->GetActorValue(*healthAV);
+                if (DEBUGGING)
+                    REX::INFO("BuffCompanions: Health of {} is {:.2f}", actor->GetDisplayFullName(), currentHealth);
+            }
+        } else {
+            if (DEBUGGING)
+                REX::WARN("BuffCompanions: Health ActorValue not found!");
+        }
         // Heal Rate buff
         auto* healRateAV = g_actorValueSingleton->healRateMult;
         if (healRateAV) {
@@ -1067,6 +1354,20 @@ void BuffCompanionsSetValues_Internal(std::vector<TrackedActorData> companionDat
         auto* actor = companion.actor;
         if (!actor)
             continue;
+        // Health Buff
+        auto* healthAV = g_actorValueSingleton->health;
+        if (healthAV) {
+            float currentHealth = actor->GetActorValue(*healthAV);
+            float delta = BUFF_HEALTH - currentHealth;
+            if (delta != 0.0f) {
+                actor->ModActorValue(RE::ACTOR_VALUE_MODIFIER::kTemporary, *healthAV, delta);
+            }
+            if (DEBUGGING)
+                REX::INFO("BuffCompanions: Health of {} is {:.2f}", actor->GetDisplayFullName(), BUFF_HEALTH);
+        } else {
+            if (DEBUGGING)
+                REX::WARN("BuffCompanions: Health ActorValue not found!");
+        }
         // Heal Rate buff
         auto* healRateAV = g_actorValueSingleton->healRateMult;
         if (healRateAV) {
@@ -1381,6 +1682,10 @@ bool CheckIsCurrentCellEncounterZone_Internal() {
         return false;
     // Get location from cell (can be by extradata or through encounter zone)
     auto* extraData = cell->extraList.get();
+    // Check if the cell is "Dangerous" (encounter zone)
+    if (cell->GetDangerous())
+        return true;
+    // Get encounter zone and location
     RE::BGSEncounterZone* encounterZone = cell->GetEncounterZone();
     RE::BGSLocation* location = nullptr;
     if (!encounterZone && extraData) {
@@ -1412,6 +1717,15 @@ bool CheckIsCurrentCellEncounterZone_Internal() {
     }
     // Return result
     return isEncounterzone;
+}
+
+// Helper to check if the current cell is interior
+bool CheckIsCurrentCellInterior_Internal() {
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    if (!player || !player->parentCell)
+        return false;
+    auto* cell = player->parentCell;
+    return cell->IsInterior();
 }
 
 // Helper to check if the current cell is a settlement
@@ -2154,43 +2468,87 @@ void HealActorHealth_Internal(RE::Actor* actor, float healthPercent) {
 }
 
 // Helper function to heal all actor Power Armour
-void HealActorPA_Internal(RE::Actor* actor) {
-    if (!actor) return;
-    // Power armour are equpped items that have the ArmorTypePower keyword
-    auto* invList = actor->inventoryList;
-    if (!invList) return;
-    for (auto& item : invList->data) {
-        if (!IsArmorItem_Internal(item.object))
-            continue;
-        auto* armor = item.object->As<RE::TESObjectARMO>();
-        if (!armor)
-            continue;
-        // Armor pieces but not the frame itself
-        if (IsArmorPower_Internal(&item) && !armor->HasKeyword(g_kwdIsPowerArmorFrame)) {
-            if (!item.stackData)
+void HealActorPA_Internal(std::vector<TrackedActorData> companionData) {
+    for (auto& companion : companionData) {
+        auto* actor = companion.actor;
+        if (!actor)
+            return;
+        // ensure power armor data is initialized
+        if (!RE::PowerArmor::ActorInPowerArmor(*actor))
+            return;
+        // Power armour are equpped items that have the ArmorTypePower keyword
+        auto* invList = actor->inventoryList;
+        if (!invList) return;
+        for (auto& item : invList->data) {
+            if (!IsArmorItem_Internal(item.object))
                 continue;
-            if (!item.stackData->IsEquipped())
-                continue; // only repair equipped items
-            RE::BSTSmartPointer<RE::BGSInventoryItem::Stack> stackData = item.stackData;
-            if (stackData && stackData->extra) {
-                // Access ExtraHealth directly instead of using methods
-                auto* extraHealth = stackData->extra->GetByType<RE::ExtraHealth>();
-                float curPct = stackData->extra->GetHealthPercent();   // 0..1
-                if (curPct < 1.0f) {
-                    stackData->extra->SetHealthPercent(0.99f); // if health value is invalid, set to 90%
-                    if (DEBUGGING)
-                        REX::INFO("HealActorPA_Internal: Repaired power armor item: {} from invalid value to 90.00%.", armor->GetFullName());
+            auto* armor = item.object->As<RE::TESObjectARMO>();
+            if (!armor)
+                continue;
+            // Armor pieces but not the frame itself
+            if (IsArmorPower_Internal(&item) && !armor->HasKeyword(g_kwdIsPowerArmorFrame)) {
+                if (!item.stackData)
                     continue;
+                if (!item.stackData->IsEquipped())
+                    continue; // only repair equipped items
+                RE::BSTSmartPointer<RE::BGSInventoryItem::Stack> stackData = item.stackData;
+                if (stackData && stackData->extra) {
+                    // Access ExtraHealth directly instead of using methods
+                    auto* extraHealth = stackData->extra->GetByType<RE::ExtraHealth>();
+                    float curPct = stackData->extra->GetHealthPercent();   // 0..1
+                    if (curPct < 1.0f) {
+                        stackData->extra->SetHealthPercent(0.99f); // if health value is invalid, set to 90%
+                        if (DEBUGGING)
+                            REX::INFO("HealActorPA_Internal: Repaired power armor item: {} from invalid value to 90.00%.", armor->GetFullName());
+                        continue;
+                    }
+                    if (curPct >= 0.99f)
+                        continue; // already nearly maxed
+                    float newPct = std::clamp(curPct + PA_REPAIR_AMOUNT, 0.0f, 1.0f); // heal 1% and cap at 100%
+                    stackData->extra->SetHealthPercent(newPct);
+                    if (DEBUGGING)
+                        REX::INFO("HealActorPA_Internal: Repaired power armor item: {} from {:.2f}% to {:.2f}%.", armor->GetFullName(), curPct * 100.0f, newPct * 100.0f);
                 }
-                if (curPct >= 0.99f)
-                    continue; // already nearly maxed
-                float newPct = std::clamp(curPct + PA_REPAIR_AMOUNT, 0.0f, 1.0f); // heal 1% and cap at 100%
-                stackData->extra->SetHealthPercent(newPct);
-                if (DEBUGGING)
-                    REX::INFO("HealActorPA_Internal: Repaired power armor item: {} from {:.2f}% to {:.2f}%.", armor->GetFullName(), curPct * 100.0f, newPct * 100.0f);
             }
         }
     }
+}
+
+// Initialize scrap item components mapping
+std::size_t InitializeScrapItemComponents_Internal() {
+    if (g_dataHandle) {
+        auto& miscItems = g_dataHandle->GetFormArray<RE::TESObjectMISC>();
+        // Iterate through miscItems
+        for (auto& miscItem : miscItems) {
+            if (!miscItem)
+                continue;
+            // Check if the misc item has component data with exactly one component
+            if (miscItem->componentData && miscItem->componentData->size() == 1) {
+                auto& component = (*miscItem->componentData)[0];
+                // Check if the component count is exactly 1
+                if (component.second.i != 1)
+                    continue;
+                auto* componentForm = component.first; // TESForm*
+                // bgComponent is the key
+                auto* bgComponent = componentForm->As<RE::BGSComponent>();
+                if (!bgComponent)
+                    continue;
+                float weight = miscItem->weight; // From TESWeightForm
+                auto it = g_componentToScrapMap.find(bgComponent);
+                if (it == g_componentToScrapMap.end()) {
+                    // Not in map - add it
+                    g_componentToScrapMap[bgComponent] = miscItem;
+                } else {
+                    // Already in map - check if current is lighter
+                    float existingWeight = it->second->weight;
+                    if (weight < existingWeight) {
+                        g_componentToScrapMap[bgComponent] = miscItem;
+                    }
+                }
+            }
+        }
+    }
+    return g_componentToScrapMap.size();
 }
 
 // Initialize global variables
@@ -2419,6 +2777,172 @@ void InitializeVariables_Internal() {
                 REX::WARN("InitializeVariables_Internal: UI singleton not found");
         }
     }
+    if (!g_globalComFollow) {
+        g_globalComFollow = GetFormByFileAndID_Internal<RE::TESGlobal>(GLOBAL_COM_FOLLOW_ID);
+        if (g_globalComFollow) {
+            if (DEBUGGING)
+                REX::INFO("InitializeVariables_Internal: Companion Follow global found with ID 0x{:08X}", GLOBAL_COM_FOLLOW_ID);
+        } else {
+            if (DEBUGGING)
+                REX::WARN("InitializeVariables_Internal: Companion Follow global with ID 0x{:08X} not found", GLOBAL_COM_FOLLOW_ID);
+        }
+    }
+    if (!g_globalComGoHome) {
+        g_globalComGoHome = GetFormByFileAndID_Internal<RE::TESGlobal>(GLOBAL_COM_GOHOME_ID);
+        if (g_globalComGoHome) {
+            if (DEBUGGING)
+                REX::INFO("InitializeVariables_Internal: Companion Go Home global found with ID 0x{:08X}", GLOBAL_COM_GOHOME_ID);
+        } else {
+            if (DEBUGGING)
+                REX::WARN("InitializeVariables_Internal: Companion Go Home global with ID 0x{:08X} not found", GLOBAL_COM_GOHOME_ID);
+        }
+    }
+    if (!g_globalComWait) {
+        g_globalComWait = GetFormByFileAndID_Internal<RE::TESGlobal>(GLOBAL_COM_WAIT_ID);
+        if (g_globalComWait) {
+            if (DEBUGGING)
+                REX::INFO("InitializeVariables_Internal: Companion Wait global found with ID 0x{:08X}", GLOBAL_COM_WAIT_ID);
+        } else {
+            if (DEBUGGING)
+                REX::WARN("InitializeVariables_Internal: Companion Wait global with ID 0x{:08X} not found", GLOBAL_COM_WAIT_ID);
+        }
+    }
+    if (!g_globalComDistFar) {
+        g_globalComDistFar = GetFormByFileAndID_Internal<RE::TESGlobal>(GLOBAL_COM_DISTFAR_ENUM_ID);
+        if (g_globalComDistFar) {
+            if (DEBUGGING)
+                REX::INFO("InitializeVariables_Internal: Companion Distance Far global found with ID 0x{:08X}", GLOBAL_COM_DISTFAR_ENUM_ID);
+        } else {
+            if (DEBUGGING)
+                REX::WARN("InitializeVariables_Internal: Companion Distance Far global with ID 0x{:08X} not found", GLOBAL_COM_DISTFAR_ENUM_ID);
+        }
+    }
+    if (!g_globalComDistMedium) {
+        g_globalComDistMedium = GetFormByFileAndID_Internal<RE::TESGlobal>(GLOBAL_COM_DISTMEDIUM_ENUM_ID);
+        if (g_globalComDistMedium) {
+            if (DEBUGGING)
+                REX::INFO("InitializeVariables_Internal: Companion Distance Medium global found with ID 0x{:08X}", GLOBAL_COM_DISTMEDIUM_ENUM_ID);
+        } else {
+            if (DEBUGGING)
+                REX::WARN("InitializeVariables_Internal: Companion Distance Medium global with ID 0x{:08X} not found", GLOBAL_COM_DISTMEDIUM_ENUM_ID);
+        }
+    }
+    if (!g_globalComDistNear) {
+        g_globalComDistNear = GetFormByFileAndID_Internal<RE::TESGlobal>(GLOBAL_COM_DISTNEAR_ENUM_ID);
+        if (g_globalComDistNear) {
+            if (DEBUGGING)
+                REX::INFO("InitializeVariables_Internal: Companion Distance Near global found with ID 0x{:08X}", GLOBAL_COM_DISTNEAR_ENUM_ID);
+        } else {
+            if (DEBUGGING)
+                REX::WARN("InitializeVariables_Internal: Companion Distance Near global with ID 0x{:08X} not found", GLOBAL_COM_DISTNEAR_ENUM_ID);
+        }
+    }
+    if (!g_globalComStanceAggro) {
+        g_globalComStanceAggro = GetFormByFileAndID_Internal<RE::TESGlobal>(GLOBAL_COM_STANCEAGGRO_ID);
+        if (g_globalComStanceAggro) {
+            if (DEBUGGING)
+                REX::INFO("InitializeVariables_Internal: Companion Stance Aggressive global found with ID 0x{:08X}", GLOBAL_COM_STANCEAGGRO_ID);
+        } else {
+            if (DEBUGGING)
+                REX::WARN("InitializeVariables_Internal: Companion Stance Aggressive global with ID 0x{:08X} not found", GLOBAL_COM_STANCEAGGRO_ID);
+        }
+    }
+    if (!g_globalComStanceCombatFalse) {
+        g_globalComStanceCombatFalse = GetFormByFileAndID_Internal<RE::TESGlobal>(GLOBAL_COM_STANCECOMBATFALSE_ID);
+        if (g_globalComStanceCombatFalse) {
+            if (DEBUGGING)
+                REX::INFO("InitializeVariables_Internal: Companion Stance Combat False global found with ID 0x{:08X}", GLOBAL_COM_STANCECOMBATFALSE_ID);
+        } else {
+            if (DEBUGGING)
+                REX::WARN("InitializeVariables_Internal: Companion Stance Combat False global with ID 0x{:08X} not found", GLOBAL_COM_STANCECOMBATFALSE_ID);
+        }
+    }
+    if (!g_globalComStanceCombatTrue) {
+        g_globalComStanceCombatTrue = GetFormByFileAndID_Internal<RE::TESGlobal>(GLOBAL_COM_STANCECOMBATTRUE_ID);
+        if (g_globalComStanceCombatTrue) {
+            if (DEBUGGING)
+                REX::INFO("InitializeVariables_Internal: Companion Stance Combat True global found with ID 0x{:08X}", GLOBAL_COM_STANCECOMBATTRUE_ID);
+        } else {
+            if (DEBUGGING)
+                REX::WARN("InitializeVariables_Internal: Companion Stance Combat True global with ID 0x{:08X} not found", GLOBAL_COM_STANCECOMBATTRUE_ID);
+        }
+    }
+    if (!g_globalComStanceDefensive) {
+        g_globalComStanceDefensive = GetFormByFileAndID_Internal<RE::TESGlobal>(GLOBAL_COM_STANCEDEFENSIVE_ID);
+        if (g_globalComStanceDefensive) {
+            if (DEBUGGING)
+                REX::INFO("InitializeVariables_Internal: Companion Stance Defensive global found with ID 0x{:08X}", GLOBAL_COM_STANCEDEFENSIVE_ID);
+        } else {
+            if (DEBUGGING)
+                REX::WARN("InitializeVariables_Internal: Companion Stance Defensive global with ID 0x{:08X} not found", GLOBAL_COM_STANCEDEFENSIVE_ID);
+        }
+    }
+    if (!g_globalComDistFarVal) {
+        g_globalComDistFarVal = GetFormByFileAndID_Internal<RE::TESGlobal>(GLOBAL_COM_DISTFAR_VAL_ID);
+        if (g_globalComDistFarVal) {
+            if (DEBUGGING)
+                REX::INFO("InitializeVariables_Internal: Companion Distance Far Value global found with ID 0x{:08X}", GLOBAL_COM_DISTFAR_VAL_ID);
+        } else {
+            if (DEBUGGING)
+                REX::WARN("InitializeVariables_Internal: Companion Distance Far Value global with ID 0x{:08X} not found", GLOBAL_COM_DISTFAR_VAL_ID);
+        }
+    }
+    if (!g_globalComDistMediumVal) {
+        g_globalComDistMediumVal = GetFormByFileAndID_Internal<RE::TESGlobal>(GLOBAL_COM_DISTMEDIUM_VAL_ID);
+        if (g_globalComDistMediumVal) {
+            if (DEBUGGING)
+                REX::INFO("InitializeVariables_Internal: Companion Distance Medium Value global found with ID 0x{:08X}", GLOBAL_COM_DISTMEDIUM_VAL_ID);
+        } else {
+            if (DEBUGGING)
+                REX::WARN("InitializeVariables_Internal: Companion Distance Medium Value global with ID 0x{:08X} not found", GLOBAL_COM_DISTMEDIUM_VAL_ID);
+        }
+    }
+    if (!g_globalComDistNearVal) {
+        g_globalComDistNearVal = GetFormByFileAndID_Internal<RE::TESGlobal>(GLOBAL_COM_DISTNEAR_VAL_ID);
+        if (g_globalComDistNearVal) {
+            if (DEBUGGING)
+                REX::INFO("InitializeVariables_Internal: Companion Distance Near Value global found with ID 0x{:08X}", GLOBAL_COM_DISTNEAR_VAL_ID);
+        } else {
+            if (DEBUGGING)
+                REX::WARN("InitializeVariables_Internal: Companion Distance Near Value global with ID 0x{:08X} not found", GLOBAL_COM_DISTNEAR_VAL_ID);
+        }
+    }
+    if (!g_actorValueFollowerState) {
+        g_actorValueFollowerState = GetFormByFileAndID_Internal<RE::ActorValueInfo>(ACTORVALUE_FOLLOWERSTATE_ID);
+        if (g_actorValueFollowerState) {
+            if (DEBUGGING)
+                REX::INFO("InitializeVariables_Internal: FollowerState ActorValue pointer initialized");
+        } else {
+            if (DEBUGGING)
+                REX::WARN("InitializeVariables_Internal: FollowerState ActorValue pointer not found");
+        }
+    }
+    if (!g_actorValueFollowerDistance) {
+        g_actorValueFollowerDistance = GetFormByFileAndID_Internal<RE::ActorValueInfo>(ACTORVALUE_FOLLOWERDISTANCE_ID);
+        if (g_actorValueFollowerDistance) {
+            if (DEBUGGING)
+                REX::INFO("InitializeVariables_Internal: FollowerDistance ActorValue pointer initialized");
+        } else {
+            if (DEBUGGING)
+                REX::WARN("InitializeVariables_Internal: FollowerDistance ActorValue pointer not found");
+        }
+    }
+    if (!g_actorValueFollowerStance) {
+        g_actorValueFollowerStance = GetFormByFileAndID_Internal<RE::ActorValueInfo>(ACTORVALUE_FOLLOWERSTANCE_ID);
+        if (g_actorValueFollowerStance) {
+            if (DEBUGGING)
+                REX::INFO("InitializeVariables_Internal: FollowerStance ActorValue pointer initialized");
+        } else {
+            if (DEBUGGING)
+                REX::WARN("InitializeVariables_Internal: FollowerStance ActorValue pointer not found");
+        }
+    }
+    // Initialize scrap item components mapping
+    if (g_componentToScrapMap.empty()) { 
+        std::size_t count = InitializeScrapItemComponents_Internal();
+        if (DEBUGGING)
+            REX::INFO("InitializeVariables_Internal: Initializing scrap item components mapping with {} entries", count);
+    }
 }
 
 // Helper function to check if an actor is a companion
@@ -2440,6 +2964,23 @@ bool IsActorActiveCompanion_Internal(RE::Actor* actor) {
         return true;
     // If not following or in combat, do not consider as active companion
     return false;
+}
+
+// Helper function to check if an actor is currently commanded by the player
+bool IsActorCommanded_Internal(RE::Actor* actor) {
+    if (!actor)
+        return false;
+    auto* aiProcess = actor->currentProcess;
+    if (!aiProcess)
+        return false;
+    // Check if the actor has a command type set
+    auto commandType = aiProcess->GetCommandType();
+    // kNone (0) means no active command
+    if (commandType == RE::COMMAND_TYPE::kNone)
+        return false;
+    if (DEBUGGING)
+        REX::INFO("IsActorCommanded_Internal: Actor {} command type is {}, commanded = true", actor->GetDisplayFullName(), static_cast<int>(commandType));
+    return true;
 }
 
 // Helper function to check if an actor is an enemy
@@ -2668,15 +3209,12 @@ bool IsActorWeightLimit_Internal(RE::Actor* actor) {
     for (auto& item : invItems->data) {
         if (!item.object)
             continue;
-        
         float itemWeight = RE::TESWeightForm::GetFormWeight(item.object, nullptr);
         int itemCount = item.GetCount();
         currentWeight += itemWeight * static_cast<float>(itemCount);
     }
     if (!avCarryWeight)
         return true; // cannot check carry weight return true
-    if (DEBUGGING)
-        REX::INFO("IsActorWeightLimit_Internal: Actor {} carries {:.2f} of max carry weight: {:.2f}", actor->GetDisplayFullName(), currentWeight, maxWeight);
     if (currentWeight >= maxWeight) {
         return true; // weight limit reached
     }
@@ -2684,6 +3222,19 @@ bool IsActorWeightLimit_Internal(RE::Actor* actor) {
 }
 
 // Helper to check if an item is an armor
+bool IsArmorItem_Internal(RE::BGSInventoryItem invItem) {
+    if (!invItem.object)
+        return false;
+    return IsArmorItem_Internal(invItem.object);
+}
+bool IsArmorItem_Internal(RE::TESObjectREFR* itemRef) {
+    if (!itemRef)
+        return false;
+    auto* itemForm = itemRef->GetObjectReference();
+    if (!itemForm)
+        return false;
+    return IsArmorItem_Internal(itemForm);
+}
 bool IsArmorItem_Internal(RE::TESForm* itemForm) {
     if (!itemForm)
         return false;
@@ -2858,6 +3409,19 @@ bool IsMenuOpen_Internal() {
 }
 
 // Helper to check if an item is a weapon
+bool IsWeaponItem_Internal(RE::BGSInventoryItem invItem) {
+    if (!invItem.object)
+        return false;
+    return IsWeaponItem_Internal(invItem.object);
+}
+bool IsWeaponItem_Internal(RE::TESObjectREFR* itemRef) {
+    if (!itemRef)
+        return false;
+    auto* itemForm = itemRef->GetObjectReference();
+    if (!itemForm)
+        return false;
+    return IsWeaponItem_Internal(itemForm);
+}
 bool IsWeaponItem_Internal(RE::TESForm* itemForm) {
     if (!itemForm)
         return false;
@@ -2870,23 +3434,22 @@ std::int32_t LootItems_Internal(std::vector<TrackedActorData> companionData) {
     if (companionData.empty()) return 0;
     std::vector<RE::TESObjectREFR*> objectReferences = GetAllLootReferencesInCurrentCell_Internal();
     // Clear looted items set before looting
-    if (objectReferences.size() > 0) {
-        g_lootedItems.clear(); // Clear looted items set before looting
-    }
+    //g_lootedLooseWeapons.clear();
+    // Counter for looted references
     std::int32_t lootedRefCount = 0;
+    // Return early if no references found
+    if (objectReferences.size() <= 0)
+        return 0;
     for (auto* object : objectReferences) {
         if (!object)
             continue;
         // Check if the object has an owner and LOOT_STEAL is false
         if (object->IsCrimeToActivate() && LOOT_STEAL == false)
             continue;
-        // Get the total weight of the objects items
-        float objectWeight = object->GetWeightInContainer();
         // iterate through companions to find the closest one
         RE::Actor* closestCompanion = nullptr;
         // Only consider companions within LOOT_RADIUS
         float closestDistance = LOOT_RADIUS;
-        auto* carryweightAV = g_actorValueSingleton->carryWeight;
         for (auto& companion : companionData) {
             // Skip if none or in combat and LOOT_COMBAT is false
             if (!companion.actor)
@@ -2896,6 +3459,8 @@ std::int32_t LootItems_Internal(std::vector<TrackedActorData> companionData) {
             if (companion.actor->IsDead(false))
                 continue;
             if (IsActorInScene_Internal(companion.actor))
+                continue;
+            if (IsActorCommanded_Internal(companion.actor))
                 continue;
             if (LOOT_WEIGHT_LIMIT && IsActorWeightLimit_Internal(companion.actor)) {
                 continue; // Cannot carry more weight
@@ -2908,7 +3473,7 @@ std::int32_t LootItems_Internal(std::vector<TrackedActorData> companionData) {
             }
         }
         if (closestCompanion) {
-            if (LootItemsFromReference_Internal(object, closestCompanion)) {
+            if (LootItemsFromReference_Internal(object, closestCompanion, objectReferences)) {
                 lootedRefCount++;
             }
         }
@@ -2965,57 +3530,8 @@ bool LootItemFilter_Internal(RE::TESForm* aForm) {
     }
 }
 
-// Helper to find and pick up dropped weapons near a corpse
-bool LootItemsWeaponLooseNearCorpse_Internal(RE::TESObjectREFR* looseItem, RE::Actor* companion) {
-    if (!looseItem || !companion)
-        return false;
-    // Must be a weapon
-    auto* baseForm = looseItem->GetObjectReference();
-    if (!baseForm)
-        return false;
-    if (!IsWeaponItem_Internal(baseForm))
-        return false;
-    // Apply loot filter for value check
-    if (!LootItemFilter_Internal(baseForm))
-        return false;
-    auto* player = RE::PlayerCharacter::GetSingleton();
-    if (!player || !player->parentCell)
-        return false;
-    auto* currentCell = player->parentCell;
-    // Skips alive actors
-    auto AllReferences = GetAllLootReferencesInCurrentCell_Internal();
-    // Get the position of the loose item
-    auto looseItemPos = looseItem->GetPosition();
-    bool pickedUpAny = false;
-    // Search cell references for weapons near this loose item
-    for (auto* ref : AllReferences) {
-        if (!ref) continue;
-        auto* refBaseForm = ref->GetObjectReference();
-        if (!refBaseForm) continue;
-        // Check if reference is an actor
-        if (refBaseForm->GetFormType() != RE::ENUM_FORM_ID::kACHR &&
-            refBaseForm->GetFormType() != RE::ENUM_FORM_ID::kNPC_) {
-            continue;
-        }
-        // Must be close to loose item (dropped weapons are usually within 50-100 units)
-        float distance = ref->GetPosition().GetDistance(looseItemPos);
-        if (distance > 100.0f) // Adjust radius as needed
-            continue;
-        // Check if already looted this item type to avoid duplicates
-        auto formID = looseItem->GetFormID();
-        if (!g_lootedItems.insert(formID).second) {
-            continue; // was already present
-        }
-        // Pick it up
-        companion->PickUpObject(looseItem, 1, false);
-        pickedUpAny = true;
-        break;
-    }
-    return pickedUpAny;
-}
-
 // Loot the items from a reference to a companion based on item filter
-bool LootItemsFromReference_Internal(RE::TESObjectREFR* source, RE::Actor* companion) {
+bool LootItemsFromReference_Internal(RE::TESObjectREFR* source, RE::Actor* companion, std::vector<RE::TESObjectREFR*> allRefs) {
     if (!source || !companion)
         return false;
     // Check if source is owned by player
@@ -3030,7 +3546,7 @@ bool LootItemsFromReference_Internal(RE::TESObjectREFR* source, RE::Actor* compa
     }
     // It's a loose item, we need to handle it first in case it is a dropped weapon
     if (!invList) {
-        return LootItemsWeaponLooseNearCorpse_Internal(source, companion);
+        return LootItemsWeaponLooseNearCorpse_Internal(source, companion, allRefs);
     }
     // It is a container, check if it has items
     if (invList->data.empty())
@@ -3039,6 +3555,44 @@ bool LootItemsFromReference_Internal(RE::TESObjectREFR* source, RE::Actor* compa
     RE::REFR_LOCK* lock = source->GetLock();
     if (lock && lock->GetLockLevel(source) != RE::LOCK_LEVEL::kUnlocked)
         return false; // Cannot loot locked containers
+    // check if its a container or a corpse
+    bool isCorpse = false;
+    if (source->GetFormType() == RE::ENUM_FORM_ID::kACHR || source->GetFormType() == RE::ENUM_FORM_ID::kNPC_) {
+        isCorpse = true;
+    }
+    // Check if there are weapons in the container and if we need to handle them as loose items
+    if (isCorpse) {
+        for (auto & itemEntry : invList->data) {
+            if (!itemEntry.object)
+                continue;
+            if (IsWeaponItem_Internal(itemEntry)) {
+                // Check if there is a loose reference around the corpse for dropped weapons
+                for (auto* ref : allRefs) {
+                    // Sanity check
+                    if (!ref || !ref->GetObjectReference())
+                        continue;
+                    auto refFormID = ref->GetFormID();
+                    if (refFormID == source->GetFormID())
+                        continue; // Skip the source itself
+                    if (g_lootedLooseWeapons.find(refFormID) != g_lootedLooseWeapons.end())
+                        continue; // Already looted this weapon type as loose item this cycle
+                    // Apply loot filter for value check
+                    if (!LootItemFilter_Internal(itemEntry.object))
+                        continue;
+                    // Check distance is close to the source
+                    float distance = source->GetPosition().GetDistance(ref->GetPosition());
+                    // Check if it's the same weapon FormID
+                    if (distance < 100.0f && itemEntry.object->GetFormID() == ref->GetObjectReference()->GetFormID()) {
+                        // Found a loose reference, handle it separately
+                        //return LootItemsWeaponLooseNearCorpse_Internal(ref, companion);
+                        companion->PickUpObject(ref, 1, false);
+                        g_lootedLooseWeapons.insert(refFormID); // Mark as looted this cycle
+                        return true;
+                    }
+                }
+            }
+        }
+    }
     // Cast RE::Actor to RE::TESObjectREFR for destination
     auto* companionRef = companion->As<RE::TESObjectREFR>();
     if (!companionRef)
@@ -3053,14 +3607,10 @@ bool LootItemsFromReference_Internal(RE::TESObjectREFR* source, RE::Actor* compa
             toTransfer.push_back(itemEntry);
         }
     }
+    // Transfer the items from the container to the companion
     for (auto& itemEntry : toTransfer) {
         if (!itemEntry.object || itemEntry.GetCount() <= 0)
             continue;
-        // Check if already looted this item type to avoid duplicates
-        auto formID = itemEntry.object->GetFormID();
-        if (!g_lootedItems.insert(formID).second) {
-            continue; // was already present
-        }
         // Get the count to transfer
         int itemCount = itemEntry.GetCount();
         totalItemCount += itemCount;
@@ -3073,6 +3623,185 @@ bool LootItemsFromReference_Internal(RE::TESObjectREFR* source, RE::Actor* compa
         return true;
     // No items were looted
     return false;
+}
+
+// Helper to find and pick up dropped weapons near a corpse
+bool LootItemsWeaponLooseNearCorpse_Internal(RE::TESObjectREFR* looseItem, RE::Actor* companion, std::vector<RE::TESObjectREFR*> allRefs) {
+    if (!looseItem || !companion)
+        return false;
+    // Must be a weapon
+    auto* baseForm = looseItem->GetObjectReference();
+    if (!baseForm)
+        return false;
+    // Check if already looted this weapon type in this current cycle to avoid duplicates
+    auto itemFormID = looseItem->GetFormID();
+    if (g_lootedLooseWeapons.find(itemFormID) != g_lootedLooseWeapons.end())
+        return false; // Already looted this weapon type as loose item this cycle
+    if (!IsWeaponItem_Internal(baseForm))
+        return false;
+    // Apply loot filter for value check
+    if (!LootItemFilter_Internal(baseForm))
+        return false;
+    // Skips alive actors
+    if (allRefs.empty())
+        return false;
+    // Get the position of the loose item
+    auto looseItemPos = looseItem->GetPosition();
+    bool pickedUpAny = false;
+    // Search cell references for weapons near this loose item
+    for (auto* ref : allRefs) {
+        if (!ref) continue;
+        auto* refBaseForm = ref->GetObjectReference();
+        if (!refBaseForm) continue;
+        // Skip if reference is not an actor/corpse (only process corpses nearby)
+        if (refBaseForm->GetFormType() != RE::ENUM_FORM_ID::kACHR && refBaseForm->GetFormType() != RE::ENUM_FORM_ID::kNPC_) {
+            continue;
+        }
+        // Must be close to loose item (dropped weapons are usually within 50-100 units)
+        float distance = ref->GetPosition().GetDistance(looseItemPos);
+        if (distance > 100.0f) // Adjust radius as needed
+            continue;
+        // Pick it up
+        companion->PickUpObject(looseItem, 1, false);
+        pickedUpAny = true;
+        // Mark as looted this cycle
+        g_lootedLooseWeapons.insert(itemFormID);
+        break;
+    }
+    return pickedUpAny;
+}
+
+// Breakdown JUNK items into components for a companion inventory
+void LootItemsBreakdown_Internal(std::vector<TrackedActorData> companionData) {
+    if (companionData.empty()) return;
+    for (auto& companion : companionData) {
+        if (!companion.actor)
+            continue;
+        LootItemsBreakdown_Internal(companion.actor);
+    }
+}
+void LootItemsBreakdown_Internal(RE::Actor* companion) {
+    if (!companion)
+        return;
+    auto* invList = companion->inventoryList;
+    if (!invList)
+        return;
+    // OPTIMIZATION: Limit processing per cycle
+    const int MAX_ITEMS_PER_CYCLE = 5;
+    int processedThisCycle = 0;
+    // Collect items to process (no modifications, this can cause iterator invalidation and freezes the game)
+    std::vector<RE::BGSInventoryItem> itemsToProcess;
+    for (auto& itemEntry : invList->data) {
+        auto* baseObject = itemEntry.object;
+        if (!baseObject || baseObject->GetFormType() != RE::ENUM_FORM_ID::kMISC)
+            continue;
+        if (IsLootKeywordExcluded_Internal(baseObject) && !IsLootAlways_Internal(baseObject))
+            continue;
+        // Pre-filter to optimize processing
+        if (auto* miscItem = baseObject->As<RE::TESObjectMISC>()) {
+            if (!miscItem)
+                continue;
+            if (std::strstr(miscItem->GetFullName(), "Shipment") != nullptr)
+                continue;
+            if (!miscItem->componentData)
+                continue;
+            if (miscItem->componentData && miscItem->componentData->size() <= 0) {
+                continue; // No components to break down
+            }
+        }
+        itemsToProcess.push_back(itemEntry);
+    }
+    if (DEBUGGING)
+        REX::INFO("LootItemsBreakdown_Internal: Processing {} junk items for breakdown in companion {}", itemsToProcess.size(), companion->GetDisplayFullName());
+    // Iterate through inventory items
+    for (auto& itemEntry : itemsToProcess) {
+        // Check if item is MISC type
+        auto* baseObject = itemEntry.object;
+        if (!baseObject || baseObject->GetFormType() != RE::ENUM_FORM_ID::kMISC)
+            continue;
+        // Get the FormID and look up the full form
+        std::uint32_t baseFormID = baseObject->GetFormID();
+        auto* fullForm = GetFormByFileAndID_Internal<RE::TESForm>(baseFormID);
+        if (!fullForm)
+            continue;
+        auto formType = fullForm->GetFormType();
+        if (formType == RE::ENUM_FORM_ID::kMISC) {
+            auto* miscItem = fullForm->As<RE::TESObjectMISC>();
+            if (miscItem && miscItem->componentData && miscItem->componentData->size() > 0) {
+                // Get the number of items to break down
+                int itemCount = itemEntry.GetCount();
+                // Breakdown the item into components - store both object and count
+                std::vector<std::pair<RE::TESBoundObject*, std::int32_t>> componentsToAdd;
+                for (auto& component : *miscItem->componentData) {
+                    // Check for valid component and count and count not more than 4 (could be a bag of cement, etc)
+                    if (component.first == nullptr || component.second.i <= 0 || component.second.i > 4)
+                        continue;
+                    // Cast TESForm* to TESBoundObject*
+                    auto* componentBoundObject = component.first->As<RE::TESBoundObject>();
+                    if (!componentBoundObject)
+                        continue;
+                    // Calculate total count: (items to break down) × (components per item)
+                    std::int32_t totalCount = itemCount * component.second.i;
+                    // Add the component and count to the list
+                    componentsToAdd.push_back({componentBoundObject, totalCount});
+                }
+                if (componentsToAdd.empty() || componentsToAdd.size() < miscItem->componentData->size())
+                    continue; // No valid components or not all components valid, skip breakdown
+                // First, validate that ALL components can be converted to scrap items
+                std::vector<std::pair<RE::TESObjectMISC*, std::int32_t>> scrapItemsToAdd;
+                // Validate and build scrap item list
+                for (auto& [componentBoundObject, count] : componentsToAdd) {
+                    if (!componentBoundObject) {
+                        scrapItemsToAdd.clear(); // Invalidate
+                        break;
+                    }
+                    auto* bgComponent = componentBoundObject->As<RE::BGSComponent>();
+                    if (!bgComponent) {
+                        scrapItemsToAdd.clear();
+                        break;
+                    }
+                    auto it = g_componentToScrapMap.find(bgComponent);
+                    if (it != g_componentToScrapMap.end()) {
+                        if (it->second == nullptr) {
+                            scrapItemsToAdd.clear(); // Invalidate
+                            break;
+                        }
+                        if (it->second == miscItem) {
+                            scrapItemsToAdd.clear(); // Invalidate (cannot convert to itself)
+                            break;
+                        }
+                        // Found scrap item - store it with the count
+                        auto* scrapItem = it->second;
+                        scrapItemsToAdd.push_back({scrapItem, count});
+                    } else {
+                        // No scrap item found - invalidate entire operation
+                        scrapItemsToAdd.clear();
+                        break;
+                    }
+                }
+                // Check if all components were successfully converted
+                if (scrapItemsToAdd.size() != miscItem->componentData->size()) {
+                    continue; // Not all components have scrap items, skip breakdown
+                }
+                // Good items - proceed to add scrap items and remove junk item
+                // OPTIMIZATION: Limit processing per cycle per update
+                processedThisCycle++;
+                if (processedThisCycle >= MAX_ITEMS_PER_CYCLE)
+                    break;
+                if (DEBUGGING)
+                    REX::INFO("LootItemsBreakdown_Internal: Breaking down junk item {} into {} scrap components for companion {}", miscItem->GetFullName(), static_cast<int>(scrapItemsToAdd.size()), companion->GetDisplayFullName());
+                // All components are valid - proceed to add scrap items with correct counts
+                for (auto& [scrapItem, count] : scrapItemsToAdd) {
+                    companion->AddObjectToContainer(scrapItem, nullptr, count, nullptr, RE::ITEM_REMOVE_REASON::kStoreContainer);
+                }
+                if (DEBUGGING)
+                    REX::INFO("LootItemsBreakdown_Internal: Successfully added scrap components to companion {}. Removing {}", companion->GetDisplayFullName(), miscItem->GetFullName());
+                // Remove the original junk item (all of them)
+                auto removeData = LootBuildRemoveItemData_Internal(&itemEntry, nullptr, itemCount);
+                companion->RemoveItem(removeData);
+            }
+        }
+    }
 }
 
 // Helper to construct the RemoveItemData for the RemoveItem(RemoveItemData zData) function
@@ -3106,11 +3835,18 @@ RE::TESObjectREFR::RemoveItemData LootBuildRemoveItemData_Internal(RE::BGSInvent
     return newData;
 }
 
+// Helper function to remove AI aggression from companions
 void RemoveAIAggression_Internal(std::vector<TrackedActorData> companionData) {
     for (auto& companion : companionData) {
         auto* actor = companion.actor;
         if (!actor)
             continue;
+        // Change the actor value to be defensive
+        if (static_cast<int>(actor->GetActorValue(*g_actorValueFollowerStance)) != FOLLOWER_STANCE::FOLLOWER_STANCE_DEFENSIVE) {
+            actor->SetActorValue(*g_actorValueFollowerStance, static_cast<float>(FOLLOWER_STANCE::FOLLOWER_STANCE_DEFENSIVE));
+            if (DEBUGGING)
+                REX::INFO("ApplyAIAggression_Internal: Setting follower stance to defensive {} for companion {}.", static_cast<float>(FOLLOWER_STANCE::FOLLOWER_STANCE_DEFENSIVE), actor->GetDisplayFullName());
+        }
         auto* npc = actor->GetNPC();
         if (!npc)
             continue;
@@ -3129,115 +3865,6 @@ void RemoveAIAggression_Internal(std::vector<TrackedActorData> companionData) {
             npc->aiData.aggroRadius[2] = 0;
         }
     }
-}
-
-// Set companion chatter multiplier
-void SetCompanionChatter_Internal(RE::Actor* comp) {
-    if (!comp)
-        return;
-    // Get current idle chatter AV values
-    auto* idleChatterMinAV = g_actorValueSingleton->idleChatterTimeMin;
-    auto* idleChatterMaxAV = g_actorValueSingleton->idleChatterTimeMAx;
-    auto idleChatterMin = comp->GetActorValue(*idleChatterMinAV);
-    auto idleChatterMax = comp->GetActorValue(*idleChatterMaxAV);
-    auto idleChatterBaseMin = comp->GetBaseActorValue(*idleChatterMinAV);
-    auto idleChatterBaseMax = comp->GetBaseActorValue(*idleChatterMaxAV);
-    float targetMin = 0.0f;
-    float targetMax = 0.0f;
-    // Adjust based on sneaking status
-    if (comp->IsSneaking()) {
-        targetMin = idleChatterBaseMin * CHATTER_MULTIPLIER_SNEAK;
-        targetMax = idleChatterBaseMax * CHATTER_MULTIPLIER_SNEAK;
-    } else {
-        targetMin = idleChatterBaseMin * CHATTER_MULTIPLIER;
-        targetMax = idleChatterBaseMax * CHATTER_MULTIPLIER;
-    }
-    // Apply changes if different from current
-    if (std::abs(idleChatterMin - targetMin) > 0.1f) {
-        comp->SetActorValue(*idleChatterMinAV, targetMin);
-    }
-    if (std::abs(idleChatterMax - targetMax) > 0.1f) {
-        comp->SetActorValue(*idleChatterMaxAV, targetMax);
-    }
-}
-
-// Helper function to set companion combat AI parameters
-void SetCompanionCombatAI_Internal(RE::Actor* comp, RE::TESCombatStyle* combatStyle) {
-    if (!comp || !combatStyle)
-        return;
-    /* // General
-    if (DEBUGGING) REX::INFO("SetCompanionCombatAI_Internal: Setting combat style for companion {}", comp->GetDisplayFullName());
-    if (DEBUGGING) REX::INFO(" - Current Offensive Multiplier: {}", combatStyle->generalData.offensiveMult);
-    if (DEBUGGING) REX::INFO(" - Current Defensive Multiplier: {}", combatStyle->generalData.defensiveMult);
-    if (DEBUGGING) REX::INFO(" - Current Ranged Score Multiplier: {}", combatStyle->generalData.rangedScoreMult);
-    if (DEBUGGING) REX::INFO(" - Current Melee Score Multiplier: {}", combatStyle->generalData.meleeScoreMult);
-    // Ranged
-    if (DEBUGGING) REX::INFO(" - Current Ranged Adjust Range Multiplier: {}", combatStyle->longRangeData.adjustRangeMult);
-    if (DEBUGGING) REX::INFO(" - Current Ranged Crouch Multiplier: {}", combatStyle->longRangeData.crouchMult);
-    if (DEBUGGING) REX::INFO(" - Current Ranged Strafe Multiplier: {}", combatStyle->longRangeData.strafeMult);
-    if (DEBUGGING) REX::INFO(" - Current Ranged Wait Multiplier: {}", combatStyle->longRangeData.waitMult);
-    if (DEBUGGING) REX::INFO(" - Current Ranged Accuracy Multiplier: {}", combatStyle->rangedData.accuracyMult);
-    // Close-Quarters
-    if (DEBUGGING) REX::INFO(" - Current Close Fallback Multiplier: {}", combatStyle->closeRangeData.fallbackMult);
-    if (DEBUGGING) REX::INFO(" - Current Close Circle Multiplier: {}", combatStyle->closeRangeData.circleMult);
-    if (DEBUGGING) REX::INFO(" - Current Close Disengage Probability: {}", combatStyle->closeRangeData.disengageProbability);
-    if (DEBUGGING) REX::INFO(" - Current Close Flank Variance Multiplier: {}", combatStyle->closeRangeData.flankVarianceMult);
-    if (DEBUGGING) REX::INFO(" - Current Close Throw Max Targets: {}", combatStyle->closeRangeData.throwMaxTargets);
-    // Cover
-    if (DEBUGGING) REX::INFO(" - Current Cover Search Distance Multiplier: {}", combatStyle->coverData.coverSearchDistanceMult); */
-    // Apply new settings from INI
-    if (combatStyle->generalData.offensiveMult != COMBAT_OFFENSIVE && COMBAT_OFFENSIVE != 1.0f)
-        combatStyle->generalData.offensiveMult = COMBAT_OFFENSIVE;
-    if (combatStyle->generalData.defensiveMult != COMBAT_DEFENSIVE && COMBAT_DEFENSIVE != 1.0f)
-        combatStyle->generalData.defensiveMult = COMBAT_DEFENSIVE;
-    if (combatStyle->generalData.rangedScoreMult != COMBAT_RANGED && COMBAT_RANGED != 1.0f)
-        combatStyle->generalData.rangedScoreMult = COMBAT_RANGED;
-    if (combatStyle->generalData.meleeScoreMult != COMBAT_MELEE && COMBAT_MELEE != 1.0f)
-        combatStyle->generalData.meleeScoreMult = COMBAT_MELEE;
-    // Ranged
-    if (combatStyle->longRangeData.adjustRangeMult != COMBAT_RANGED_ADJUSTMENT && COMBAT_RANGED_ADJUSTMENT != 1.0f)
-        combatStyle->longRangeData.adjustRangeMult = COMBAT_RANGED_ADJUSTMENT;
-    if (combatStyle->longRangeData.crouchMult != COMBAT_RANGED_CROUCHING && COMBAT_RANGED_CROUCHING != 1.0f)
-        combatStyle->longRangeData.crouchMult = COMBAT_RANGED_CROUCHING;
-    if (combatStyle->longRangeData.strafeMult != COMBAT_RANGED_STRAFE && COMBAT_RANGED_STRAFE != 1.0f)
-        combatStyle->longRangeData.strafeMult = COMBAT_RANGED_STRAFE;
-    if (combatStyle->longRangeData.waitMult != COMBAT_RANGED_WAITING && COMBAT_RANGED_WAITING != 1.0f)
-        combatStyle->longRangeData.waitMult = COMBAT_RANGED_WAITING;
-    if (combatStyle->rangedData.accuracyMult != COMBAT_RANGED_ACCURACY && COMBAT_RANGED_ACCURACY != 1.0f)
-        combatStyle->rangedData.accuracyMult = COMBAT_RANGED_ACCURACY;
-    // Close-Quarters
-    if (combatStyle->closeRangeData.fallbackMult != COMBAT_CLOSE_FALLBACK && COMBAT_CLOSE_FALLBACK != 1.0f)
-        combatStyle->closeRangeData.fallbackMult = COMBAT_CLOSE_FALLBACK;
-    if (combatStyle->closeRangeData.circleMult != COMBAT_CLOSE_CIRCLE && COMBAT_CLOSE_CIRCLE != 1.0f)
-        combatStyle->closeRangeData.circleMult = COMBAT_CLOSE_CIRCLE;
-    if (combatStyle->closeRangeData.disengageProbability != COMBAT_CLOSE_DISENGAGE && COMBAT_CLOSE_DISENGAGE != 1.0f)
-        combatStyle->closeRangeData.disengageProbability = COMBAT_CLOSE_DISENGAGE;
-    if (combatStyle->closeRangeData.flankVarianceMult != COMBAT_CLOSE_FLANK && COMBAT_CLOSE_FLANK != 1.0f)
-        combatStyle->closeRangeData.flankVarianceMult = COMBAT_CLOSE_FLANK;
-    if (combatStyle->closeRangeData.throwMaxTargets != COMBAT_CLOSE_THROW_GRENADE && COMBAT_CLOSE_THROW_GRENADE != 1.0f)
-        combatStyle->closeRangeData.throwMaxTargets = COMBAT_CLOSE_THROW_GRENADE;
-    // Cover
-    if (combatStyle->coverData.coverSearchDistanceMult != COMBAT_COVER_DISTANCE && COMBAT_COVER_DISTANCE != 1.0f)
-        combatStyle->coverData.coverSearchDistanceMult = COMBAT_COVER_DISTANCE;
-    /* if (DEBUGGING) REX::INFO("SetCompanionCombatAI_Internal: Combat style for companion {} updated.", comp->GetDisplayFullName());
-    if (DEBUGGING) REX::INFO(" - New Offensive Multiplier: {}", combatStyle->generalData.offensiveMult);
-    if (DEBUGGING) REX::INFO(" - New Defensive Multiplier: {}", combatStyle->generalData.defensiveMult);
-    if (DEBUGGING) REX::INFO(" - New Ranged Score Multiplier: {}", combatStyle->generalData.rangedScoreMult);
-    if (DEBUGGING) REX::INFO(" - New Melee Score Multiplier: {}", combatStyle->generalData.meleeScoreMult);
-    // Ranged
-    if (DEBUGGING) REX::INFO(" - New Ranged Adjust Range Multiplier: {}", combatStyle->longRangeData.adjustRangeMult);
-    if (DEBUGGING) REX::INFO(" - New Ranged Crouch Multiplier: {}", combatStyle->longRangeData.crouchMult);
-    if (DEBUGGING) REX::INFO(" - New Ranged Strafe Multiplier: {}", combatStyle->longRangeData.strafeMult);
-    if (DEBUGGING) REX::INFO(" - New Ranged Wait Multiplier: {}", combatStyle->longRangeData.waitMult);
-    if (DEBUGGING) REX::INFO(" - New Ranged Accuracy Multiplier: {}", combatStyle->rangedData.accuracyMult);
-    // Close-Quarters
-    if (DEBUGGING) REX::INFO(" - New Close Fallback Multiplier: {}", combatStyle->closeRangeData.fallbackMult);
-    if (DEBUGGING) REX::INFO(" - New Close Circle Multiplier: {}", combatStyle->closeRangeData.circleMult);
-    if (DEBUGGING) REX::INFO(" - New Close Disengage Probability: {}", combatStyle->closeRangeData.disengageProbability);
-    if (DEBUGGING) REX::INFO(" - New Close Flank Variance Multiplier: {}", combatStyle->closeRangeData.flankVarianceMult);
-    if (DEBUGGING) REX::INFO(" - New Close Throw Max Targets: {}", combatStyle->closeRangeData.throwMaxTargets);
-    // Cover
-    if (DEBUGGING) REX::INFO(" - New Cover Search Distance Multiplier: {}", combatStyle->coverData.coverSearchDistanceMult); */
 }
 
 // Populate global arrays with current cell actors
@@ -3324,6 +3951,14 @@ std::int32_t UpdateGlobalActorArrays_Internal() {
                 dataCompanionActor.stuckCounter = stuckCounter;
                 // Update lost status
                 dataCompanionActor.lost = ActorTracking::GetActorLostStatusFast(actor);
+                // Update overshoot status
+                dataCompanionActor.overshoot = ActorTracking::GetActorOvershootStatusFast(actor);
+                // Update the followerState
+                dataCompanionActor.followerState = std::int16_t(actor->GetActorValue(*g_actorValueFollowerState));
+                // Update the followerDistance if he is not overshooting
+                dataCompanionActor.followerDistance = std::int16_t(actor->GetActorValue(*g_actorValueFollowerDistance));
+                // Update the followerStance
+                dataCompanionActor.followerStance = std::int16_t(actor->GetActorValue(*g_actorValueFollowerStance));
             }
             dataCompanionActors.push_back(dataCompanionActor);
         } else if (IsActorEnemy_Internal(actor)) {
@@ -3412,6 +4047,7 @@ void ActorTracking::SyncCompanionFlagsWithSnapshot(const std::vector<TrackedActo
                 flags->velocity = d.velocity;
                 flags->stuckCounter = d.stuckCounter;
                 flags->lost = d.lost;
+                flags->overshoot = d.overshoot;
             }
         }
     }
@@ -3540,206 +4176,248 @@ void ActorTracking::SetActorLostStatusFast(RE::Actor* actor, bool lost) {
     }
     return;
 }
+void ActorTracking::SetActorOvershootStatusFast(RE::Actor* actor, bool overshoot) {
+    if (!actor) return;
+    std::lock_guard<std::mutex> lk(g_companionFlagsMutex);
+    auto it = g_companionFlags.find(actor);
+    // Check if entry exists
+    if (it != g_companionFlags.end()) {
+        it->second->overshoot = overshoot;
+    }
+    return;
+}
+bool ActorTracking::GetActorOvershootStatusFast(RE::Actor* actor) {
+    if (!actor) return false;
+    std::lock_guard<std::mutex> lk(g_companionFlagsMutex);
+    auto it = g_companionFlags.find(actor);
+    // Check if entry exists
+    if (it != g_companionFlags.end()) {
+        return it->second->overshoot;
+    }
+    return false;
+}
 
 // Companion Movement task management
 namespace MovementSystem {
-std::mutex g_companionTasksMutex;
-std::vector<CompanionTask> g_companionTasks;
-void AddCompanionTask(RE::Actor* companion, float duration) {
-    if (!companion || !companion->currentProcess || !companion->currentProcess->middleHigh)
-        return;
-    std::lock_guard<std::mutex> lock(g_companionTasksMutex);
-    // Check if already in list
-    for (auto& task : g_companionTasks) {
-        if (task.companion == companion) {
-            task.timeRemaining = duration; // Reset timer for the existing companion task
+    std::mutex g_companionTasksMutex;
+    std::vector<CompanionTask> g_companionTasks;
+    void AddCompanionTask(RE::Actor* companion, float duration) {
+        if (!companion || !companion->currentProcess || !companion->currentProcess->middleHigh)
             return;
+        std::lock_guard<std::mutex> lock(g_companionTasksMutex);
+        // Check if already in list
+        for (auto& task : g_companionTasks) {
+            if (task.companion == companion) {
+                task.timeRemaining = duration; // Reset timer for the existing companion task
+                return;
+            }
         }
+        // Add new Companion task
+        g_companionTasks.push_back({companion, duration, 0.0f});
     }
-    // Add new Companion task
-    g_companionTasks.push_back({companion, duration, 0.0f});
-}
-void ProcessCompanionTasks(float deltaTime) {
-    std::lock_guard<std::mutex> lock(g_companionTasksMutex);
-    for (auto it = g_companionTasks.begin(); it != g_companionTasks.end();) {
-        // Validate companion
-        if (!it->companion) {
-            it = g_companionTasks.erase(it);
-            continue;
-        }
-        if (it->companion->IsDeleted() || !it->companion->Get3D()) {
-            // Manually remove stuck measures and erase task to increment iterator
-            MovementSystem::RemoveStuckMeasures(it->companion);
-            it = g_companionTasks.erase(it);
-            continue;
-        }
-        // Check if a scene is running - skip processing during scenes
-        if (IsActorInScene_Internal(it->companion)) {
-            ++it;
-            continue;
-        }
-        it->timeRemaining -= deltaTime;
-        // Timer expired - check if we should remove the task
-        if (it->timeRemaining <= 0.0f) {
-            // Remove stuck measures if any
-            MovementSystem::RemoveStuckMeasures(it->companion);
-            // Remove companion and increment iterator
-            it = g_companionTasks.erase(it);
-        } else {
-            // Check if companion is moving and stuck to apply measures if needed
-            if (it->companion->currentProcess && it->companion->currentProcess->middleHigh) {
-                // Checks for stuck status
-                bool isStuck = false;
-                // Get current velocity between main loop updates
-                float velocity = ActorTracking::GetActorVelocityFast(it->companion);
-                // Check if the AI is trying to move
-                if (it->companion->currentProcess->middleHigh->desiredSpeed <= 0.0f) {
-                    // Not trying to move - skip velocity stuck check
-                    ActorTracking::SetActorStuckCounterFast(it->companion, 0);
-                } else {
-                    // Check velocity-based stuck (moving too slowly while not idling)
-                    if (velocity < AI_STUCK_SPEED &&
-                        it->companion->currentProcess->middleHigh->desiredSpeed > velocity &&
-                        // Make dure the companion is not idling
-                        !it->companion->currentProcess->middleHigh->currentIdle &&
-                        !it->companion->currentProcess->middleHigh->furnitureIdle) {
-                        // speed < threshold indicates little to no real movement
-                        // While desiredSpeed > velocity indicates the companion is trying to move
-                        // Could be stuck before an obstacle
-                        isStuck = true;
-                    } else if (velocity >= AI_STUCK_SPEED) {
-                        // Moving normally - reset counter
+    void ProcessCompanionTasks(float deltaTime) {
+        std::lock_guard<std::mutex> lock(g_companionTasksMutex);
+        for (auto it = g_companionTasks.begin(); it != g_companionTasks.end();) {
+            // Validate companion
+            if (!it->companion) {
+                it = g_companionTasks.erase(it);
+                continue;
+            }
+            if (it->companion->IsDeleted() || !it->companion->Get3D()) {
+                // Manually remove stuck measures and erase task to increment iterator
+                MovementSystem::RemoveStuckMeasures(it->companion);
+                it = g_companionTasks.erase(it);
+                continue;
+            }
+            // Check if a scene is running - skip processing during scenes
+            if (IsActorInScene_Internal(it->companion)) {
+                ++it;
+                continue;
+            }
+            it->timeRemaining -= deltaTime;
+            // Timer expired - check if we should remove the task
+            if (it->timeRemaining <= 0.0f) {
+                // Remove stuck measures if any
+                MovementSystem::RemoveStuckMeasures(it->companion);
+                // Remove companion and increment iterator
+                it = g_companionTasks.erase(it);
+            } else {
+                // Check if companion is moving and stuck to apply measures if needed
+                if (it->companion->currentProcess && it->companion->currentProcess->middleHigh) {
+                    // Get a copy of the TrackedActorData for the companion
+                    auto companionData = ActorTracking::GetCompanionData(it->companion);
+                    if (!companionData) {
+                        ++it;
+                        continue;
+                    }
+                    // Check if the companion AI and skip if not actively following
+                    if  (companionData->followerState != FOLLOWER_STATE_FOLLOW) {
+                        // Idling - skip velocity stuck check
+                        ActorTracking::SetActorStuckCounterFast(it->companion, 0);
+                        ActorTracking::SetActorStuckStatusFast(it->companion, false);
+                        ++it;
+                        continue;
+                    }
+                    // Reset overshoot status at the start of each check
+                    bool isStuck = false;
+                    // Get current velocity between main loop updates
+                    float velocity = companionData->velocity;
+                    // Check if the AI is trying to move
+                    if (it->companion->currentProcess->middleHigh->desiredSpeed > 0.0f) {
+                        // Check velocity-based stuck (moving too slowly)
+                        if (velocity < AI_STUCK_SPEED && it->companion->currentProcess->middleHigh->desiredSpeed > velocity) {
+                            // speed < threshold indicates little to no real movement
+                            // While desiredSpeed > velocity indicates the companion is trying to move
+                            // Could be stuck before an obstacle
+                            isStuck = true;
+                        } else {
+                            // Moving normally - reset counter
+                            ActorTracking::SetActorStuckCounterFast(it->companion, 0);
+                            // Check if the companion is overshooting
+                            // Do not run fast around the player when in near follower distance
+                            if (velocity > AI_OVERSHOOT_SPEED && companionData->followerDistance == FOLLOWER_DISTANCE_NEAR)
+                                ActorTracking::SetActorOvershootStatusFast(it->companion, true);
+                            // Do not run fast towards the player when reaching far follower distance
+                            if (velocity > AI_OVERSHOOT_SPEED && companionData->distanceToPlayer < g_globalComDistFarVal->value)
+                                ActorTracking::SetActorOvershootStatusFast(it->companion, true);
+                            // Check if the companion slowed down from overshooting
+                            if (ActorTracking::GetActorOvershootStatusFast(it->companion) && velocity < AI_OVERSHOOT_SPEED) {
+                                // No longer overshooting
+                                ActorTracking::SetActorOvershootStatusFast(it->companion, false);
+                            }
+                        }
+                        // Check collision-based stuck
+                        // Someone or something runs into the companion, could be the player
+                        // compCharCtrl->numCollisions > 0 indicates collisions with the player or other objects
+                        auto* compCharCtrl = it->companion->currentProcess->middleHigh->charController.get();
+                        if (compCharCtrl && compCharCtrl->numCollisions > AI_STUCK_COLLISIONS) {
+                            isStuck = true;
+                        }
+                    } else {
+                        // Not trying to move - reset counter
                         ActorTracking::SetActorStuckCounterFast(it->companion, 0);
                     }
-                    // Check collision-based stuck
-                    // Someone or something runs into the companion, could be the player
-                    // compCharCtrl->numCollisions > 0 indicates collisions with the player or other objects
-                    auto* compCharCtrl = it->companion->currentProcess->middleHigh->charController.get();
-                    if (compCharCtrl && compCharCtrl->numCollisions > AI_STUCK_COLLISIONS) {
-                        isStuck = true;
-                    }
-                }
-                // Apply progressive escalation based on stuck status
-                if (isStuck) {
-                    ActorTracking::SetActorStuckStatusFast(it->companion, true);
-                    ActorTracking::IncrementActorStuckCounterFast(it->companion);
-                    
-                    // Get current stuck counter to determine which tier of measures to apply
-                    int currentCount = ActorTracking::GetActorStuckCounterFast(it->companion);
-                    
-                    if (currentCount <= UPDATE_INTERVAL * 10) {
-                        // Tier 1: Soft NavMesh adjustment (Z position bump)
-                        // First full main loop cycle - try gentle measures
-                        MovementSystem::ApplyStuckMeasures1(it->companion);
-                    } else if (currentCount <= 2 * UPDATE_INTERVAL * 10) {
-                        // Tier 2: Aggressive measures (disable bumper, fake support, step height)
-                        // Second full main loop cycle - try more aggressive measures
-                        MovementSystem::ApplyStuckMeasures2(it->companion);
+                    // Apply progressive escalation based on stuck status
+                    if (isStuck) {
+                        ActorTracking::SetActorStuckStatusFast(it->companion, true);
+                        ActorTracking::IncrementActorStuckCounterFast(it->companion);
+                        
+                        // Get current stuck counter to determine which tier of measures to apply
+                        int currentCount = ActorTracking::GetActorStuckCounterFast(it->companion);
+                        
+                        if (currentCount <= UPDATE_INTERVAL * 10) {
+                            // Tier 1: Soft NavMesh adjustment (Z position bump)
+                            // First full main loop cycle - try gentle measures
+                            MovementSystem::ApplyStuckMeasures1(it->companion);
+                        } else if (currentCount <= 2 * UPDATE_INTERVAL * 10) {
+                            // Tier 2: Aggressive measures (disable bumper, fake support, step height)
+                            // Second full main loop cycle - try more aggressive measures
+                            MovementSystem::ApplyStuckMeasures2(it->companion);
+                        } else {
+                            // Tier 3: Totally stuck - set lost flag for main loop teleport
+                            // After two full main loop cycles, give up and mark for teleport
+                            ActorTracking::SetActorLostStatusFast(it->companion, true);
+                        }
                     } else {
-                        // Tier 3: Totally stuck - set lost flag for main loop teleport
-                        // After two full main loop cycles, give up and mark for teleport
-                        ActorTracking::SetActorLostStatusFast(it->companion, true);
+                        // Not stuck - remove any applied measures
+                        MovementSystem::RemoveStuckMeasures(it->companion);
+                        // Clear stuck status
+                        ActorTracking::SetActorStuckStatusFast(it->companion, false);
+                        ActorTracking::SetActorStuckCounterFast(it->companion, 0);
                     }
-                } else {
-                    // Not stuck - remove any applied measures
-                    MovementSystem::RemoveStuckMeasures(it->companion);
-                    // Clear stuck status
-                    ActorTracking::SetActorStuckStatusFast(it->companion, false);
-                    ActorTracking::SetActorStuckCounterFast(it->companion, 0);
                 }
+                ++it;
             }
-            ++it;
         }
     }
-}
-void RemoveCompanionTask(RE::Actor* companion) {
-    if (!companion)
-        return;
-    std::lock_guard<std::mutex> lock(g_companionTasksMutex);
-    for (auto it = g_companionTasks.begin(); it != g_companionTasks.end(); ++it) {
-        if (it->companion == companion) {
-            // Disable companion movement measures if any
-            MovementSystem::RemoveStuckMeasures(it->companion);
-            // Clear stuck status
-            ActorTracking::SetActorStuckStatusFast(it->companion, false);
-            g_companionTasks.erase(it);
+    void RemoveCompanionTask(RE::Actor* companion) {
+        if (!companion)
             return;
-        }
-    }
-}
-// NavMesh stuck measures (most often)
-void ApplyStuckMeasures1(RE::Actor* companion) {
-    if (!companion)
-        return;
-    for (auto& task : g_companionTasks) {
-        if (task.companion == companion) {
-            // Apply stuck measures immediately
-            if (task.companion && task.companion->currentProcess && task.companion->currentProcess->middleHigh) {
-                // Move the companion upwards slightly to help get unstuck
-                // Get current position
-                RE::NiPoint3 currentPosition = task.companion->GetPosition();
-                // Move up by 0.5 units to pick up the new navmesh and force a re-evaluation
-                // This should be barely visible to the player
-                currentPosition.z += 0.1f;
-                // Teleport and true to update CharController position as well
-                task.companion->SetPosition(currentPosition, true);
-                // Update the character 3D position
-                //task.companion->UpdateActor3DPosition();
+        std::lock_guard<std::mutex> lock(g_companionTasksMutex);
+        for (auto it = g_companionTasks.begin(); it != g_companionTasks.end(); ++it) {
+            if (it->companion == companion) {
+                // Disable companion movement measures if any
+                MovementSystem::RemoveStuckMeasures(it->companion);
+                // Clear stuck status
+                ActorTracking::SetActorStuckStatusFast(it->companion, false);
+                g_companionTasks.erase(it);
+                return;
             }
-            return;
         }
     }
-}
-// Velocity/collision stuck measures (i.e. running against an object)
-void ApplyStuckMeasures2(RE::Actor* companion) {
-    if (!companion)
-        return;
-    for (auto& task : g_companionTasks) {
-        if (task.companion == companion) {
-            // Apply stuck measures immediately
-            if (task.companion && task.companion->currentProcess && task.companion->currentProcess->middleHigh) {
-                auto* compCharCtrl = task.companion->currentProcess->middleHigh->charController.get();
-                if (compCharCtrl) {
-                    // Reset collisions to 0
-                    compCharCtrl->numCollisions = 0;
-                    // Disable bumper
-                    compCharCtrl->useBumper = false;
-                    // Enable fake support
-                    compCharCtrl->fakeSupport = true;
-                    // Increase step height
-                    compCharCtrl->stepHeightMod = 2.0f; // Increase step height to help overcome obstacles
+    // NavMesh stuck measures (most often)
+    void ApplyStuckMeasures1(RE::Actor* companion) {
+        if (!companion)
+            return;
+        for (auto& task : g_companionTasks) {
+            if (task.companion == companion) {
+                // Apply stuck measures immediately
+                if (task.companion && task.companion->currentProcess && task.companion->currentProcess->middleHigh) {
+                    // Move the companion upwards slightly to help get unstuck
+                    // Get current position
+                    RE::NiPoint3 currentPosition = task.companion->GetPosition();
+                    // Move up by 0.5 units to pick up the new navmesh and force a re-evaluation
+                    // This should be barely visible to the player
+                    currentPosition.z += 0.1f;
+                    // Teleport and true to update CharController position as well
+                    task.companion->SetPosition(currentPosition, true);
                     // Update the character 3D position
                     //task.companion->UpdateActor3DPosition();
                 }
+                return;
             }
         }
     }
-}
-void RemoveStuckMeasures(RE::Actor* companion) {
-    if (!companion)
-        return;
-    for (auto& task : g_companionTasks) {
-        if (task.companion == companion) {
-            // Remove stuck measures
-            if (task.companion && task.companion->currentProcess && task.companion->currentProcess->middleHigh) {
-                auto* compCharCtrl = task.companion->currentProcess->middleHigh->charController.get();
-                if (compCharCtrl) {
-                    // Reset collisions to 0
-                    compCharCtrl->numCollisions = 0;
-                    // Enable bumper
-                    compCharCtrl->useBumper = true;
-                    // Disable fake support
-                    compCharCtrl->fakeSupport = false;
-                    // Restore step height
-                    compCharCtrl->stepHeightMod = 0.0f; // Reset step height to default
-                    // Update the character 3D position
-                    //task.companion->UpdateActor3DPosition();
+    // Velocity/collision stuck measures (i.e. running against an object)
+    void ApplyStuckMeasures2(RE::Actor* companion) {
+        if (!companion)
+            return;
+        for (auto& task : g_companionTasks) {
+            if (task.companion == companion) {
+                // Apply stuck measures immediately
+                if (task.companion && task.companion->currentProcess && task.companion->currentProcess->middleHigh) {
+                    auto* compCharCtrl = task.companion->currentProcess->middleHigh->charController.get();
+                    if (compCharCtrl) {
+                        // Reset collisions to 0
+                        compCharCtrl->numCollisions = 0;
+                        // Disable bumper
+                        compCharCtrl->useBumper = false;
+                        // Enable fake support
+                        compCharCtrl->fakeSupport = true;
+                        // Increase step height
+                        compCharCtrl->stepHeightMod = 2.0f; // Increase step height to help overcome obstacles
+                        // Update the character 3D position
+                        //task.companion->UpdateActor3DPosition();
+                    }
                 }
             }
-            return;
         }
     }
-}
+    void RemoveStuckMeasures(RE::Actor* companion) {
+        if (!companion)
+            return;
+        for (auto& task : g_companionTasks) {
+            if (task.companion == companion) {
+                // Remove stuck measures
+                if (task.companion && task.companion->currentProcess && task.companion->currentProcess->middleHigh) {
+                    auto* compCharCtrl = task.companion->currentProcess->middleHigh->charController.get();
+                    if (compCharCtrl) {
+                        // Reset collisions to 0
+                        compCharCtrl->numCollisions = 0;
+                        // Enable bumper
+                        compCharCtrl->useBumper = true;
+                        // Disable fake support
+                        compCharCtrl->fakeSupport = false;
+                        // Restore step height
+                        compCharCtrl->stepHeightMod = 0.0f; // Reset step height to default
+                        // Update the character 3D position
+                        //task.companion->UpdateActor3DPosition();
+                    }
+                }
+                return;
+            }
+        }
+    }
 } // namespace MovementSystem
 
 // --- PAPYRUS ---

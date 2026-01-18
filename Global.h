@@ -26,6 +26,7 @@ extern const F4SE::PapyrusInterface *g_papyrusInterface;
 extern const F4SE::TaskInterface *g_taskInterface;
 
 // --- Global Variables ---
+extern const char* MODULE_NAME;
 // Expose config load functions
 void LoadConfig();
 void LoadMCMConfig();
@@ -34,7 +35,7 @@ extern CCB_RepeatingTimer g_updateTimer;
 extern CCB_RepeatingTimer g_movementTimer;
 // --- User Settings ---
 // Default ini file
-extern const char *defaultIni;
+extern const std::string defaultIni;
 // Global debug flag
 extern bool DEBUGGING;
 // Current game time
@@ -45,6 +46,12 @@ extern float UPDATE_INTERVAL;
 extern int INI_RELOAD_INTERVAL;
 // Actor search radius around the player in game units
 extern float ACTOR_SEARCH_RADIUS;
+// General flags
+extern bool COMBAT_SETTINGS;                 // Enable Combat Settings
+extern bool FOLLOW_SETTINGS;                 // Enable Follow Settings
+extern bool LOOTING_SETTINGS;                // Enable Looting Settings
+extern bool ATTRIBUTES_SETTINGS;             // Enable Attributes Settings
+extern bool OTHER_SETTINGS;                  // Enable Other Settings
 // AI behavior settings
 extern float AI_HEALTH_THRESHOLD;
 extern bool AI_USE_STIMPAK_ENABLED;
@@ -52,19 +59,32 @@ extern bool AI_USE_STIMPAK_UNLIMITED;
 extern bool AI_AUTO_REVIVE;
 extern bool AI_FLEE_COMBAT;
 extern float AI_FLEE_DISTANCE;
+// Follow distance settings
+extern int AI_FOLLOW_DISTANCE_GENERAL; // 0=Near, 1=Medium, 2=Far
+extern int AI_FOLLOW_DISTANCE_INTERIORS; // 0=Near, 1=Medium, 2=Far
+extern float AI_FOLLOW_DISTANCE_NEAR;
+extern float AI_FOLLOW_DISTANCE_MEDIUM;
+extern float AI_FOLLOW_DISTANCE_FAR;
+extern float AI_FOLLOW_SPEED_NEAR;
+extern float AI_FOLLOW_SPEED_MEDIUM;
+extern float AI_FOLLOW_SPEED_FAR;
+// Equipment settings
 extern bool AI_EQUIP_ARMOR;
 extern bool AI_EQUIP_WEAPON;
 extern std::vector<int> AI_EQUIP_SLOTS;
 extern bool AI_EQUIP_AMMO_REFILL;
 extern int AI_EQUIP_AMMO_AMOUNT;
 // Movement settings
-extern bool AI_STUCK_CHECK;
+extern bool AI_DISTANCE_ENABLED;
+extern bool AI_SPEED_ENABLED;
+extern bool AI_STUCK_ENABLED;
 extern int AI_STUCK_THRESHOLD;
 extern int AI_STUCK_COLLISIONS;
 extern float AI_STUCK_SPEED;
-extern float AI_STUCK_DISTANCE;
+extern float AI_OVERSHOOT_SPEED;
 // Aggression settings
 extern bool AI_AGGRESSION_ENABLED;
+extern bool AI_AGGRESSION_ZONEAWARE;
 extern bool AI_AGGRESSION_ALL;
 extern bool AI_AGGRESSION_SNEAK;
 extern float AI_AGGRESSION_RADIUS0;
@@ -75,26 +95,26 @@ extern bool CHATTER_ENABLED;
 extern float CHATTER_MULTIPLIER;
 extern float CHATTER_MULTIPLIER_SNEAK;
 // Combat AI settings
-extern bool COMBAT_ENABLED;
-extern int COMBAT_TARGET;
-extern float COMBAT_OFFENSIVE;
-extern float COMBAT_DEFENSIVE;
-extern float COMBAT_RANGED;
-extern float COMBAT_MELEE;
+extern bool COMBATSTYLE_ENABLED;
+extern int COMBATSTYLE_TARGET;
+extern float COMBATSTYLE_OFFENSIVE;
+extern float COMBATSTYLE_DEFENSIVE;
+extern float COMBATSTYLE_RANGED_WEAPON;
+extern float COMBATSTYLE_MELEE_WEAPON;
 // Ranged
-extern float COMBAT_RANGED_ADJUSTMENT;
-extern float COMBAT_RANGED_CROUCHING;
-extern float COMBAT_RANGED_STRAFE;
-extern float COMBAT_RANGED_WAITING;
-extern float COMBAT_RANGED_ACCURACY;
+extern float COMBATSTYLE_RANGED_ADJUSTMENT;
+extern float COMBATSTYLE_RANGED_CROUCHING;
+extern float COMBATSTYLE_RANGED_STRAFE;
+extern float COMBATSTYLE_RANGED_WAITING;
+extern float COMBATSTYLE_RANGED_ACCURACY;
 // Close-Quarters
-extern float COMBAT_CLOSE_FALLBACK;
-extern float COMBAT_CLOSE_CIRCLE;
-extern float COMBAT_CLOSE_DISENGAGE;
-extern float COMBAT_CLOSE_FLANK;
-extern int COMBAT_CLOSE_THROW_GRENADE;
+extern float COMBATSTYLE_CLOSE_FALLBACK;
+extern float COMBATSTYLE_CLOSE_CIRCLE;
+extern float COMBATSTYLE_CLOSE_DISENGAGE;
+extern float COMBATSTYLE_CLOSE_FLANK;
+extern int COMBATSTYLE_CLOSE_THROW_GRENADE;
 // Cover
-extern float COMBAT_COVER_DISTANCE;
+extern float COMBATSTYLE_COVER_DISTANCE;
 // Loot item filter flag
 extern bool LOOT_ENABLED;
 extern bool LOOT_COMBAT;
@@ -105,6 +125,7 @@ extern bool LOOT_AID;
 extern bool LOOT_GEAR;
 extern int LOOT_MIN_VALUE;
 extern int LOOT_MAX_VALUE;
+extern bool LOOT_JUNK_BREAKDOWN;
 extern bool LOOT_STEAL;
 extern bool LOOT_WEIGHT_LIMIT;
 // XP gain settings
@@ -114,6 +135,7 @@ extern float XP_KILLER_TOLERANCE;
 // Buff settings
 extern bool BUFF_ENABLED;
 extern bool BUFF_SET_VALUES;
+extern float BUFF_HEALTH;
 extern float BUFF_HEAL_RATE;
 extern float BUFF_COMBAT_HEAL_RATE;
 extern float BUFF_DAMAGE_RESIST;
@@ -160,6 +182,13 @@ extern RE::TESFaction *g_companionFaction;
 // ActorValue for HC downed state
 extern std::uint32_t ACTORVALUE_HC_DOWNED_ID;
 extern RE::ActorValueInfo *g_actorValueHCDowned;
+// ActorValues for follower state/distance/stance
+extern std::uint32_t ACTORVALUE_FOLLOWERSTATE_ID;
+extern RE::ActorValueInfo* g_actorValueFollowerState;
+extern std::uint32_t ACTORVALUE_FOLLOWERDISTANCE_ID;
+extern RE::ActorValueInfo* g_actorValueFollowerDistance;
+extern std::uint32_t ACTORVALUE_FOLLOWERSTANCE_ID;
+extern RE::ActorValueInfo* g_actorValueFollowerStance;
 // Item forms
 extern std::uint32_t ITEM_STIMPAK_ID;
 extern RE::TESForm *g_itemStimpak;
@@ -198,6 +227,35 @@ extern RE::ActorEquipManager* g_actorEquipMgrSingleton;
 extern RE::UI* g_uiSingleton;
 // Loot Form Types
 extern std::vector<RE::ENUM_FORM_ID> LOOTABLE_FORM_TYPES;
+// Globals for follower commands
+extern std::uint32_t GLOBAL_COM_FOLLOW_ID;
+extern RE::TESGlobal* g_globalComFollow;
+extern std::uint32_t GLOBAL_COM_GOHOME_ID;
+extern RE::TESGlobal* g_globalComGoHome;
+extern std::uint32_t GLOBAL_COM_WAIT_ID;
+extern RE::TESGlobal* g_globalComWait;
+extern std::uint32_t GLOBAL_COM_DISTFAR_ENUM_ID;
+extern RE::TESGlobal* g_globalComDistFar;
+extern std::uint32_t GLOBAL_COM_DISTMEDIUM_ENUM_ID;
+extern RE::TESGlobal* g_globalComDistMedium;
+extern std::uint32_t GLOBAL_COM_DISTNEAR_ENUM_ID;
+extern RE::TESGlobal* g_globalComDistNear;
+extern std::uint32_t GLOBAL_COM_STANCEAGGRO_ID;
+extern RE::TESGlobal* g_globalComStanceAggro;
+extern std::uint32_t GLOBAL_COM_STANCECOMBATFALSE_ID;
+extern RE::TESGlobal* g_globalComStanceCombatFalse;
+extern std::uint32_t GLOBAL_COM_STANCECOMBATTRUE_ID;
+extern RE::TESGlobal* g_globalComStanceCombatTrue;
+extern std::uint32_t GLOBAL_COM_STANCEDEFENSIVE_ID;
+extern RE::TESGlobal* g_globalComStanceDefensive;
+extern std::uint32_t GLOBAL_COM_DISTFAR_VAL_ID;
+extern RE::TESGlobal* g_globalComDistFarVal;
+extern std::uint32_t GLOBAL_COM_DISTMEDIUM_VAL_ID;
+extern RE::TESGlobal* g_globalComDistMediumVal;
+extern std::uint32_t GLOBAL_COM_DISTNEAR_VAL_ID;
+extern RE::TESGlobal* g_globalComDistNearVal;
+// Components Scrap Item mapping
+extern std::unordered_map<RE::BGSComponent*, RE::TESObjectMISC*> g_componentToScrapMap;
 
 // REX Logging Compatibility
 #undef ERROR

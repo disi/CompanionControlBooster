@@ -12,9 +12,9 @@ std::shared_ptr<spdlog::logger> gLog;
 // This is used by commonLibF4
 namespace Version {
 inline constexpr std::size_t MAJOR = 0;
-inline constexpr std::size_t MINOR = 5;
-inline constexpr std::size_t PATCH = 2;
-inline constexpr auto NAME = "0.5.2"sv;
+inline constexpr std::size_t MINOR = 6;
+inline constexpr std::size_t PATCH = 0;
+inline constexpr auto NAME = "0.6.0"sv;
 inline constexpr auto AUTHORNAME = "disi"sv;
 inline constexpr auto PROJECT = "CCBCL"sv;
 } // namespace Version
@@ -31,6 +31,10 @@ F4SE::PluginHandle g_pluginHandle = 0;
 RE::TESDataHandler* g_dataHandle = 0;
 
 // --- Global Variables ---
+// Module name
+const char* MODULE_NAME = "CCBCL.dll";
+const char* INI_NAME = "CCBCL.ini";
+const char* INI_MCM_NAME = "MCMCCBCL.ini";
 // Our update timers
 CCB_RepeatingTimer g_updateTimer;
 CCB_RepeatingTimer g_movementTimer;
@@ -48,7 +52,13 @@ float UPDATE_INTERVAL = 3.0f;
 // Read the ini every x updates (0 = only on game start)
 int INI_RELOAD_INTERVAL = 10;
 // Actor search radius around the player in game units
-float ACTOR_SEARCH_RADIUS = 4000.0f;
+float ACTOR_SEARCH_RADIUS = 8000.0f;
+// General flags
+bool COMBAT_SETTINGS = true;                 // Enable Combat Settings
+bool FOLLOW_SETTINGS = true;                 // Enable Follow Settings
+bool LOOTING_SETTINGS = true;                // Enable Looting Settings
+bool ATTRIBUTES_SETTINGS = true;             // Enable Attributes Settings
+bool OTHER_SETTINGS = true;                  // Enable Other Settings
 // AI settings
 float AI_HEALTH_THRESHOLD = 40.0f;
 bool AI_USE_STIMPAK_ENABLED = true;
@@ -56,49 +66,62 @@ bool AI_USE_STIMPAK_UNLIMITED = false;
 bool AI_AUTO_REVIVE = true;
 bool AI_FLEE_COMBAT = true;
 float AI_FLEE_DISTANCE = 500.0f;
+// follow distance settings
+bool AI_DISTANCE_ENABLED = true;
+int AI_FOLLOW_DISTANCE_GENERAL = 1; // 0=Near, 1=Medium, 2=Far
+int AI_FOLLOW_DISTANCE_INTERIORS= 0; // 0=Near, 1=Medium, 2=Far
+float AI_FOLLOW_DISTANCE_NEAR = 500.0f;
+float AI_FOLLOW_DISTANCE_MEDIUM = 1000.0f;
+float AI_FOLLOW_DISTANCE_FAR = 1500.0f;
+bool AI_SPEED_ENABLED = true;
+float AI_FOLLOW_SPEED_NEAR = 1.0f;
+float AI_FOLLOW_SPEED_MEDIUM = 1.5f;
+float AI_FOLLOW_SPEED_FAR = 2.0f;
+// Equipment settings
 bool AI_EQUIP_ARMOR = false;
 bool AI_EQUIP_WEAPON = false;
 std::vector<int> AI_EQUIP_SLOTS = { 42, 43, 44, 45 }; // 33 Outfit, 30 Head, 41 [A]Body, 42 [A]Left Arm, 43 [A]Right Arm, 44 [A]Left Leg, 45 [A]Right Leg
 bool AI_EQUIP_AMMO_REFILL = true;
 int AI_EQUIP_AMMO_AMOUNT = 50;
 // Movement settings
-bool AI_STUCK_CHECK = true;
+bool AI_STUCK_ENABLED = true;
 int AI_STUCK_THRESHOLD = 20;
 int AI_STUCK_COLLISIONS = 2;
 float AI_STUCK_SPEED = 10.0f;
-float AI_STUCK_DISTANCE = 1500.0f;
+float AI_OVERSHOOT_SPEED = 250.0f;
 // Aggression settings
 bool AI_AGGRESSION_ENABLED = true;
+bool AI_AGGRESSION_ZONEAWARE = true;
 bool AI_AGGRESSION_ALL = true;
 bool AI_AGGRESSION_SNEAK = false;
-float AI_AGGRESSION_RADIUS0 = 3000.0f;
-float AI_AGGRESSION_RADIUS1 = 2000.0f;
-float AI_AGGRESSION_RADIUS2 = 1000.0f;
+float AI_AGGRESSION_RADIUS0 = 1600.0f;
+float AI_AGGRESSION_RADIUS1 = 1200.0f;
+float AI_AGGRESSION_RADIUS2 = 800.0f;
 // Chatter settings
 bool CHATTER_ENABLED = false;
 float CHATTER_MULTIPLIER = 1.0f;
 float CHATTER_MULTIPLIER_SNEAK = 5.0f;
 // Combat AI settings
-bool COMBAT_ENABLED = true;
-int COMBAT_TARGET = 0;
-float COMBAT_OFFENSIVE = 0.5f;
-float COMBAT_DEFENSIVE = 0.5f;
-float COMBAT_RANGED = 1.0f;
-float COMBAT_MELEE = 0.2f;
+bool COMBATSTYLE_ENABLED = true;
+int COMBATSTYLE_TARGET = 0;
+float COMBATSTYLE_OFFENSIVE = 0.5f;
+float COMBATSTYLE_DEFENSIVE = 0.5f;
+float COMBATSTYLE_RANGED_WEAPON = 1.0f;
+float COMBATSTYLE_MELEE_WEAPON = 1.0f;
 // Ranged
-float COMBAT_RANGED_ADJUSTMENT = 1.0f;
-float COMBAT_RANGED_CROUCHING = 1.0f;
-float COMBAT_RANGED_STRAFE = 0.5f;
-float COMBAT_RANGED_WAITING = 0.5f;
-float COMBAT_RANGED_ACCURACY = 0.5f;
+float COMBATSTYLE_RANGED_ADJUSTMENT = 1.0f;
+float COMBATSTYLE_RANGED_CROUCHING = 1.0f;
+float COMBATSTYLE_RANGED_STRAFE = 0.5f;
+float COMBATSTYLE_RANGED_WAITING = 0.5f;
+float COMBATSTYLE_RANGED_ACCURACY = 0.5f;
 // Close-Quarters
-float COMBAT_CLOSE_FALLBACK = 0.5f;
-float COMBAT_CLOSE_CIRCLE = 0.5f;
-float COMBAT_CLOSE_DISENGAGE = 0.5f;
-float COMBAT_CLOSE_FLANK = 0.5f;
-int COMBAT_CLOSE_THROW_GRENADE = 0;
+float COMBATSTYLE_CLOSE_FALLBACK = 0.5f;
+float COMBATSTYLE_CLOSE_CIRCLE = 0.5f;
+float COMBATSTYLE_CLOSE_DISENGAGE = 0.5f;
+float COMBATSTYLE_CLOSE_FLANK = 0.5f;
+int COMBATSTYLE_CLOSE_THROW_GRENADE = 0;
 // Cover
-float COMBAT_COVER_DISTANCE = 0.5f;
+float COMBATSTYLE_COVER_DISTANCE = 0.5f;
 // Loot item filter flag
 bool LOOT_ENABLED = true;
 bool LOOT_COMBAT = false;
@@ -108,16 +131,18 @@ bool LOOT_AMMO = true;
 bool LOOT_AID = true;
 bool LOOT_GEAR = true;
 int LOOT_MIN_VALUE = 0;
-int LOOT_MAX_VALUE = 800;
+int LOOT_MAX_VALUE = 9999;
+bool LOOT_JUNK_BREAKDOWN = true;
 bool LOOT_STEAL = false;
 bool LOOT_WEIGHT_LIMIT = true;
 // XP gain settings
 bool XP_ENABLED = true;
 float XP_RATIO = 0.5f;
-float XP_KILLER_TOLERANCE = 3000.0f;
+float XP_KILLER_TOLERANCE = 2000.0f;
 // Buff settings
 bool BUFF_ENABLED = true;
 bool BUFF_SET_VALUES = false;
+float BUFF_HEALTH = 100.0f;
 float BUFF_HEAL_RATE = 1.0f;
 float BUFF_COMBAT_HEAL_RATE = 1.0f;
 float BUFF_DAMAGE_RESIST = 10.0f;
@@ -162,6 +187,13 @@ RE::TESFaction* g_companionFaction = nullptr;
 // ActorValue for HC downed state
 std::uint32_t ACTORVALUE_HC_DOWNED_ID = 0x00249F6D; // 00249F6D HC_IsCompanionInNeedOfHealing
 RE::ActorValueInfo* g_actorValueHCDowned = nullptr;
+// ActorValues for follower state/distance/stance
+std::uint32_t ACTORVALUE_FOLLOWERSTATE_ID = 0x00000344;   // 00000344 FollowerState
+RE::ActorValueInfo* g_actorValueFollowerState = nullptr;
+std::uint32_t ACTORVALUE_FOLLOWERDISTANCE_ID = 0x00000345; // 00000345 FollowerDistance
+RE::ActorValueInfo* g_actorValueFollowerDistance = nullptr;
+std::uint32_t ACTORVALUE_FOLLOWERSTANCE_ID = 0x00000346;  // 00000346 FollowerStance
+RE::ActorValueInfo* g_actorValueFollowerStance = nullptr;
 // Item forms
 std::uint32_t ITEM_STIMPAK_ID = 0x00023736; // 00023736 Stimpak
 RE::TESForm* g_itemStimpak = nullptr;
@@ -211,8 +243,53 @@ std::vector<RE::ENUM_FORM_ID> LOOTABLE_FORM_TYPES = {
     RE::ENUM_FORM_ID::kKEYM, // Keys
     RE::ENUM_FORM_ID::kFURN  // Furniture
 };
+// Globals
+std::uint32_t GLOBAL_COM_FOLLOW_ID=0x0002A106;      // 0002A106 FollowersComFollow 1.0
+RE::TESGlobal* g_globalComFollow = nullptr;
+std::uint32_t GLOBAL_COM_GOHOME_ID=0x0002A108;       // 0002A108 FollowersComGoHome 4.0
+RE::TESGlobal* g_globalComGoHome = nullptr;
+std::uint32_t GLOBAL_COM_WAIT_ID=0x0002A107;         // 0002A107 FollowersComWait 2.0
+RE::TESGlobal* g_globalComWait = nullptr;
+std::uint32_t GLOBAL_COM_DISTFAR_ENUM_ID=0x0002A10B;       // 0002A10B FollowersComDistFar 2.0
+RE::TESGlobal* g_globalComDistFar = nullptr;
+std::uint32_t GLOBAL_COM_DISTMEDIUM_ENUM_ID=0x0002A10A;     // 0002A10A FollowersComDistMedium 1.0
+RE::TESGlobal* g_globalComDistMedium = nullptr;
+std::uint32_t GLOBAL_COM_DISTNEAR_ENUM_ID=0x0002A109;     // 0002A109 FollowersComDistNear 0.0
+RE::TESGlobal* g_globalComDistNear = nullptr;
+// Follower stances
+std::uint32_t GLOBAL_COM_STANCEAGGRO_ID=0x0002AE53;    // 0002AE53 FollowersComStanceAggro 1.0
+RE::TESGlobal* g_globalComStanceAggro = nullptr;
+std::uint32_t GLOBAL_COM_STANCECOMBATFALSE_ID=0x0002AE55; // 0002AE55 FollowersComStanceCombatFalse 0.0
+RE::TESGlobal* g_globalComStanceCombatFalse = nullptr;
+std::uint32_t GLOBAL_COM_STANCECOMBATTRUE_ID=0x0002AE56; // 0002AE56 FollowersComStanceCombatTrue 1.0
+RE::TESGlobal* g_globalComStanceCombatTrue = nullptr;
+std::uint32_t GLOBAL_COM_STANCEDEFENSIVE_ID=0x0002AE54; // 0002AE54 FollowersComStanceDefensive 0.0
+RE::TESGlobal* g_globalComStanceDefensive = nullptr;
+// Follower distances
+std::uint32_t GLOBAL_COM_DISTFAR_VAL_ID=0x000F0D06;       // 000F0D06 FollowersComDistFar 1500.0
+RE::TESGlobal* g_globalComDistFarVal = nullptr;
+std::uint32_t GLOBAL_COM_DISTMEDIUM_VAL_ID=0x000F0D05;    // 000F0D05 FollowersComDistMedium 1000.0
+RE::TESGlobal* g_globalComDistMediumVal = nullptr;
+std::uint32_t GLOBAL_COM_DISTNEAR_VAL_ID=0x000F0D04;      // 000F0D04 FollowersComDistNear 500.0
+RE::TESGlobal* g_globalComDistNearVal = nullptr;
 
-// Helper function to extract value from a line
+// Helper function to extract key from a line in lower case
+inline std::string GetKeyFromLine(const std::string& line) {
+    size_t eqPos = line.find('=');
+    if (eqPos == std::string::npos)
+        return "";
+    // extract key
+    std::string key = line.substr(0, eqPos);
+    // remove trailing comments
+    size_t semicolonPos = key.find(';');
+    if (semicolonPos != std::string::npos)
+        key = key.substr(0, semicolonPos);
+    // Remove whitespace
+    key.erase(std::remove_if(key.begin(), key.end(), ::isspace), key.end());
+    // Convert to lowercase for case-insensitive comparison
+    return ToLower(key);
+}
+// Helper function to extract value from a line in lower case
 inline std::string GetValueFromLine(const std::string& line) {
     size_t eqPos = line.find('=');
     if (eqPos == std::string::npos)
@@ -223,7 +300,7 @@ inline std::string GetValueFromLine(const std::string& line) {
     if (semicolonPos != std::string::npos)
         value = value.substr(0, semicolonPos);
     value.erase(std::remove_if(value.begin(), value.end(), ::isspace), value.end());
-    return value;
+    return ToLower(value);
 }
 // Helper to get the directory of the plugin DLL
 std::string GetPluginDirectory(HMODULE hModule) {
@@ -233,6 +310,11 @@ std::string GetPluginDirectory(HMODULE hModule) {
     size_t pos = fullPath.find_last_of("\\/");
     return (pos != std::string::npos) ? fullPath.substr(0, pos + 1) : "";
 }
+// Helper to convert "true"/"1" to bool
+bool ParseBool(const std::string& value) {
+    std::string v = ToLower(value);
+    return (v == "true" || v == "1");
+}
 // Helper to parse hex string to uint32_t
 uint32_t ParseHexFormID(const std::string& hexStr) {
     return static_cast<uint32_t>(std::stoul(hexStr, nullptr, 16));
@@ -240,1485 +322,314 @@ uint32_t ParseHexFormID(const std::string& hexStr) {
 // Load the MCM configuration from INI file
 void LoadMCMConfig() {
     // Get the DLL handle for this plugin
-    HMODULE hModule = GetModuleHandleA("CCBCL.dll");
+    HMODULE hModule = GetModuleHandleA(MODULE_NAME);
     std::filesystem::path pluginDirPath = GetPluginDirectory(hModule);
-    auto mcmConfigPath = pluginDirPath.parent_path().parent_path().parent_path() / "MCM" / "Settings" / "MCMCCBCL.ini";
-    mcmConfigPath = std::filesystem::weakly_canonical(mcmConfigPath);
+    auto mcmConfigPath = pluginDirPath.parent_path().parent_path().parent_path() / "MCM" / "Settings" / INI_MCM_NAME;
+    // Remove cleaning for compatibility issues with Vortex hardlinks
+    //mcmConfigPath = std::filesystem::weakly_canonical(mcmConfigPath);
     if (DEBUGGING)
         REX::INFO("LoadMCMConfig: Loading config from: {}", mcmConfigPath.string());
-    if (std::filesystem::exists(mcmConfigPath)) {
-        std::ifstream file(mcmConfigPath);
-        if (!file.is_open()) {
-            REX::WARN("LoadMCMConfig: Could not open MCM INI file: {}", mcmConfigPath.string());
-            return;
-        }
-        // read file...
-        std::string line;
-        while (std::getline(file, line)) {
-            // Trim whitespace
-            line.erase(0, line.find_first_not_of(" \t\r\n"));
-            line.erase(line.find_last_not_of(" \t\r\n") + 1);
-            // Skip comments and empty lines
-            if (line.empty() || line[0] == ';')
-                continue;
-            // Lower case for case-insensitive comparison
-            std::string lowerLine = ToLower(line);
-            // Search for settings and update variables accordingly
-            // --- Debugging flag ---
-            if (lowerLine.find("idebugging") == 0) {
-                std::string value = GetValueFromLine(line);
-                if (ToLower(value) == "true" || value == "1") {
-                    DEBUGGING = true;
-                } else {
-                    DEBUGGING = false;
-                }
-                continue;
-            }
-            // AI Settings
-            if (lowerLine.find("iai_use_stimpak_enabled") == 0) {
-                std::string value = GetValueFromLine(line);
-                if (ToLower(value) == "true" || value == "1") {
-                    AI_USE_STIMPAK_ENABLED = true;
-                } else {
-                    AI_USE_STIMPAK_ENABLED = false;
-                }
-                continue;
-            }
-            if (lowerLine.find("iai_use_stimpak_unlimited") == 0) {
-                std::string value = GetValueFromLine(line);
-                if (ToLower(value) == "true" || value == "1") {
-                    AI_USE_STIMPAK_UNLIMITED = true;
-                } else {
-                    AI_USE_STIMPAK_UNLIMITED = false;
-                }
-                continue;
-            }
-            if (lowerLine.find("iai_auto_revive") == 0) {
-                std::string value = GetValueFromLine(line);
-                if (ToLower(value) == "true" || value == "1") {
-                    AI_AUTO_REVIVE = true;
-                } else {
-                    AI_AUTO_REVIVE = false;
-                }
-                continue;
-            }
-            if (lowerLine.find("iai_flee_combat") == 0) {
-                std::string value = GetValueFromLine(line);
-                if (ToLower(value) == "true" || value == "1") {
-                    AI_FLEE_COMBAT = true;
-                } else {
-                    AI_FLEE_COMBAT = false;
-                }
-                continue;
-            }
-            if (lowerLine.find("iai_equip_armor") == 0) {
-                std::string value = GetValueFromLine(line);
-                if (ToLower(value) == "true" || value == "1") {
-                    AI_EQUIP_ARMOR = true;
-                } else {
-                    AI_EQUIP_ARMOR = false;
-                }
-                continue;
-            }
-            if (lowerLine.find("iai_equip_weapon") == 0) {
-                std::string value = GetValueFromLine(line);
-                if (ToLower(value) == "true" || value == "1") {
-                    AI_EQUIP_WEAPON = true;
-                } else {
-                    AI_EQUIP_WEAPON = false;
-                }
-                continue;
-            }
-            if (lowerLine.find("iai_equip_ammo_refill") == 0) {
-                std::string value = GetValueFromLine(line);
-                if (ToLower(value) == "true" || value == "1") {
-                    AI_EQUIP_AMMO_REFILL = true;
-                } else {
-                    AI_EQUIP_AMMO_REFILL = false;
-                }
-                continue;
-            }
-            // Aggression settings
-            if (lowerLine.find("iai_aggression_enabled") == 0) {
-                std::string value = GetValueFromLine(line);
-                if (ToLower(value) == "true" || value == "1") {
-                    AI_AGGRESSION_ENABLED = true;
-                } else {
-                    AI_AGGRESSION_ENABLED = false;
-                }
-                continue;
-            }
-            if (lowerLine.find("iai_aggression_sneak") == 0) {
-                std::string value = GetValueFromLine(line);
-                if (ToLower(value) == "true" || value == "1") {
-                    AI_AGGRESSION_SNEAK = true;
-                } else {
-                    AI_AGGRESSION_SNEAK = false;
-                }
-                continue;
-            }
-            // Movement settings
-            if (lowerLine.find("iai_stuck_check") == 0) {
-                std::string value = GetValueFromLine(line);
-                if (ToLower(value) == "true" || value == "1") {
-                    AI_STUCK_CHECK = true;
-                } else {
-                    AI_STUCK_CHECK = false;
-                }
-                continue;
-            }
-            // Loot settings
-            if (lowerLine.find("iloot_enabled") == 0) {
-                std::string value = GetValueFromLine(line);
-                if (ToLower(value) == "true" || value == "1") {
-                    LOOT_ENABLED = true;
-                } else {
-                    LOOT_ENABLED = false;
-                }
-                continue;
-            }
-            if (lowerLine.find("iloot_combat") == 0) {
-                std::string value = GetValueFromLine(line);
-                if (ToLower(value) == "true" || value == "1") {
-                    LOOT_COMBAT = true;
-                } else {
-                    LOOT_COMBAT = false;
-                }
-                continue;
-            }
-            if (lowerLine.find("iloot_weight_limit") == 0) {
-                std::string value = GetValueFromLine(line);
-                if (ToLower(value) == "true" || value == "1") {
-                    LOOT_WEIGHT_LIMIT = true;
-                } else {
-                    LOOT_WEIGHT_LIMIT = false;
-                }
-                continue;
-            }
-            if (lowerLine.find("iloot_junk") == 0) {
-                std::string value = GetValueFromLine(line);
-                if (ToLower(value) == "true" || value == "1") {
-                    LOOT_JUNK = true;
-                } else {
-                    LOOT_JUNK = false;
-                }
-                continue;
-            }
-            if (lowerLine.find("iloot_ammo") == 0) {
-                std::string value = GetValueFromLine(line);
-                if (ToLower(value) == "true" || value == "1") {
-                    LOOT_AMMO = true;
-                } else {
-                    LOOT_AMMO = false;
-                }
-                continue;
-            }
-            if (lowerLine.find("iloot_aid") == 0) {
-                std::string value = GetValueFromLine(line);
-                if (ToLower(value) == "true" || value == "1") {
-                    LOOT_AID = true;
-                } else {
-                    LOOT_AID = false;
-                }
-                continue;
-            }
-            if (lowerLine.find("iloot_gear") == 0) {
-                std::string value = GetValueFromLine(line);
-                if (ToLower(value) == "true" || value == "1") {
-                    LOOT_GEAR = true;
-                } else {
-                    LOOT_GEAR = false;
-                }
-                continue;
-            }
-            if (lowerLine.find("iloot_steal") == 0) {
-                std::string value = GetValueFromLine(line);
-                if (ToLower(value) == "true" || value == "1") {
-                    LOOT_STEAL = true;
-                } else {
-                    LOOT_STEAL = false;
-                }
-                continue;
-            }
-            // System
-            if (lowerLine.find("ixp_enabled") == 0) {
-                std::string value = GetValueFromLine(line);
-                if (ToLower(value) == "true" || value == "1") {
-                    XP_ENABLED = true;
-                } else {
-                    XP_ENABLED = false;
-                }
-                continue;
-            }
-            if (lowerLine.find("ichatter_enabled") == 0) {
-                std::string value = GetValueFromLine(line);
-                if (ToLower(value) == "true" || value == "1") {
-                    CHATTER_ENABLED = true;
-                } else {
-                    CHATTER_ENABLED = false;
-                }
-                continue;
-            }
-            if (lowerLine.find("ibuff_enabled") == 0) {
-                std::string value = GetValueFromLine(line);
-                if (ToLower(value) == "true" || value == "1") {
-                    BUFF_ENABLED = true;
-                } else {
-                    BUFF_ENABLED = false;
-                }
-                continue;
-            }
-            if (lowerLine.find("ibuff_set_values") == 0) {
-                std::string value = GetValueFromLine(line);
-                if (ToLower(value) == "true" || value == "1") {
-                    BUFF_SET_VALUES = true;
-                } else {
-                    BUFF_SET_VALUES = false;
-                }
-                continue;
-            }
-            if (lowerLine.find("ipa_enabled") == 0) {
-                std::string value = GetValueFromLine(line);
-                if (ToLower(value) == "true" || value == "1") {
-                    PA_ENABLED = true;
-                } else {
-                    PA_ENABLED = false;
-                }
-                continue;
-            }
-            if (lowerLine.find("icombat_enabled") == 0) {
-                std::string value = GetValueFromLine(line);
-                if (ToLower(value) == "true" || value == "1") {
-                    COMBAT_ENABLED = true;
-                } else {
-                    COMBAT_ENABLED = false;
-                }
-                continue;
-            }
-            if (lowerLine.find("iperk_enabled") == 0) {
-                std::string value = GetValueFromLine(line);
-                if (ToLower(value) == "true" || value == "1") {
-                    PERK_ENABLED = true;
-                } else {
-                    PERK_ENABLED = false;
-                }
-                continue;
-            }
-        }
-    } else {
+    if (!std::filesystem::exists(mcmConfigPath)) {
         REX::WARN("LoadMCMConfig: MCM config not found: {}", mcmConfigPath.string());
+        return;
+    }
+    // Create our boolean settings map, can be expanded as needed
+    std::unordered_map<std::string, bool*> boolSettings = {
+        {"idebugging", &DEBUGGING},
+        {"icombat_settings", &COMBAT_SETTINGS},
+        {"ifollow_settings", &FOLLOW_SETTINGS},
+        {"ilooting_settings", &LOOTING_SETTINGS},
+        {"iattributes_settings", &ATTRIBUTES_SETTINGS},
+        {"iother_settings", &OTHER_SETTINGS},
+        {"iai_use_stimpak_enabled", &AI_USE_STIMPAK_ENABLED},
+        {"iai_use_stimpak_unlimited", &AI_USE_STIMPAK_UNLIMITED},
+        {"iai_auto_revive", &AI_AUTO_REVIVE},
+        {"iai_flee_combat", &AI_FLEE_COMBAT},
+        {"iai_equip_armor", &AI_EQUIP_ARMOR},
+        {"iai_equip_weapon", &AI_EQUIP_WEAPON},
+        {"iai_equip_ammo_refill", &AI_EQUIP_AMMO_REFILL},
+        {"iai_aggression_enabled", &AI_AGGRESSION_ENABLED},
+        {"iai_aggression_zoneaware", &AI_AGGRESSION_ZONEAWARE},
+        {"iai_aggression_sneak", &AI_AGGRESSION_SNEAK},
+        {"iai_distance_enabled", &AI_DISTANCE_ENABLED},
+        {"iai_speed_enabled", &AI_SPEED_ENABLED},
+        {"iai_stuck_enabled", &AI_STUCK_ENABLED},
+        {"iloot_enabled", &LOOT_ENABLED},
+        {"iloot_combat", &LOOT_COMBAT},
+        {"iloot_weight_limit", &LOOT_WEIGHT_LIMIT},
+        {"iloot_junk", &LOOT_JUNK},
+        {"iloot_ammo", &LOOT_AMMO},
+        {"iloot_aid", &LOOT_AID},
+        {"iloot_gear", &LOOT_GEAR},
+        {"iloot_junk_breakdown", &LOOT_JUNK_BREAKDOWN},
+        {"iloot_steal", &LOOT_STEAL},
+        {"ixp_enabled", &XP_ENABLED},
+        {"ichatter_enabled", &CHATTER_ENABLED},
+        {"ibuff_enabled", &BUFF_ENABLED},
+        {"ikeyword_enabled", &KEYWORD_ENABLED},
+        {"ibuff_set_values", &BUFF_SET_VALUES},
+        {"ipa_enabled", &PA_ENABLED},
+        {"icombatstyle_enabled", &COMBATSTYLE_ENABLED},
+        {"iperk_enabled", &PERK_ENABLED}
+    };
+    std::unordered_map<std::string, int*> intMap = {
+        {"iai_follow_distance_general", &AI_FOLLOW_DISTANCE_GENERAL},
+        {"iai_follow_distance_interiors", &AI_FOLLOW_DISTANCE_INTERIORS}
+    };
+    // Open file read only
+    std::ifstream file(mcmConfigPath, std::ios::in);
+    if (!file.is_open()) {
+        REX::WARN("LoadMCMConfig: Could not open MCM INI file: {}", mcmConfigPath.string());
+        return;
+    }
+    // Read the lines
+    std::string line;
+    while (std::getline(file, line)) {
+        // Skip for empty lines or comments starting with ';' or section headers '['
+        size_t first = line.find_first_not_of(" \t\r\n");
+        if (first == std::string::npos || line[first] == ';' || line[first] == '[')
+            continue;
+        // Extract Key and Value
+        std::string key = GetKeyFromLine(line);
+        std::string valStr = GetValueFromLine(line);
+        if (key.empty())
+            continue;
+        if (boolSettings.count(key)) {
+            *boolSettings[key] = ParseBool(valStr);
+            if (DEBUGGING)
+                REX::INFO("MCM Config: {} set to {}", key, *boolSettings[key]);
+        } else if (intMap.count(key)) {
+            try {
+                *intMap[key] = std::stoi(valStr);
+                if (DEBUGGING)
+                    REX::INFO("MCM Config: {} set to {}", key, *intMap[key]);
+            } catch (const std::exception& e) {
+                REX::WARN("MCM Config: Failed to parse int for key {}: {}", key, e.what());
+            }
+        }
     }
 }
 // Load the plugin configuration from INI file
 void LoadConfig() {
-    // Clear previous perk list if any
-    PERK_ID_LIST.clear();
-    // Clear previous actor exclusion list if any
-    EXCLUDE_ACTOR_ID_LIST.clear();
-    // Clear previous race stimpak list if any
-    RACE_STIMPAK_ID.clear();
-    // Get the DLL handle for this plugin
-    HMODULE hModule = GetModuleHandleA("CCBCL.dll");
-    std::string configPath = GetPluginDirectory(hModule) + "CCBCL.ini";
-    REX::INFO("LoadConfig: Loading config from: {}", configPath);
-    // First try to open the stream directly
-    std::ifstream file(configPath);
+    HMODULE hModule = GetModuleHandleA(MODULE_NAME);
+    std::filesystem::path configPath = std::filesystem::path(GetPluginDirectory(hModule)) / INI_NAME;
+    REX::INFO("LoadConfig: Loading config from: {}", configPath.string());
+    // Boolean Map
+    std::unordered_map<std::string, bool*> boolMap = {
+        {"debugging", &DEBUGGING}, {"combat_settings", &COMBAT_SETTINGS},
+        {"follow_settings", &FOLLOW_SETTINGS}, {"looting_settings", &LOOTING_SETTINGS},
+        {"attributes_settings", &ATTRIBUTES_SETTINGS}, {"other_settings", &OTHER_SETTINGS},
+        {"ai_use_stimpak_enabled", &AI_USE_STIMPAK_ENABLED}, {"ai_distance_enabled", &AI_DISTANCE_ENABLED},
+        {"ai_use_stimpak_unlimited", &AI_USE_STIMPAK_UNLIMITED}, {"ai_auto_revive", &AI_AUTO_REVIVE},
+        {"ai_flee_combat", &AI_FLEE_COMBAT}, {"ai_equip_armor", &AI_EQUIP_ARMOR},
+        {"ai_equip_weapon", &AI_EQUIP_WEAPON}, {"ai_equip_ammo_refill", &AI_EQUIP_AMMO_REFILL},
+        {"ai_stuck_enabled", &AI_STUCK_ENABLED}, {"ai_aggression_enable", &AI_AGGRESSION_ENABLED},
+        {"ai_aggression_zoneaware", &AI_AGGRESSION_ZONEAWARE}, {"ai_speed_enabled", &AI_SPEED_ENABLED},
+        {"ai_aggression_all", &AI_AGGRESSION_ALL}, {"ai_aggression_sneak", &AI_AGGRESSION_SNEAK},
+        {"chatter_enabled", &CHATTER_ENABLED}, {"combatstyle_enabled", &COMBATSTYLE_ENABLED},
+        {"loot_enabled", &LOOT_ENABLED}, {"loot_combat", &LOOT_COMBAT},
+        {"loot_junk", &LOOT_JUNK}, {"loot_ammo", &LOOT_AMMO}, {"loot_aid", &LOOT_AID},
+        {"loot_gear", &LOOT_GEAR}, {"loot_junk_breakdown", &LOOT_JUNK_BREAKDOWN},
+        {"loot_steal", &LOOT_STEAL}, {"loot_weight_limit", &LOOT_WEIGHT_LIMIT},
+        {"xp_enabled", &XP_ENABLED}, {"pa_enabled", &PA_ENABLED},
+        {"buff_enabled", &BUFF_ENABLED}, {"buff_set_values", &BUFF_SET_VALUES},
+        {"perk_enabled", &PERK_ENABLED}, {"keyword_enabled", &KEYWORD_ENABLED}
+    };
+    // Float Map
+    std::unordered_map<std::string, float*> floatMap = {
+        {"timer_delay", &TIMER_DELAY}, {"update_interval", &UPDATE_INTERVAL},
+        {"actor_search_radius", &ACTOR_SEARCH_RADIUS}, {"ai_health_threshold", &AI_HEALTH_THRESHOLD},
+        {"ai_flee_distance", &AI_FLEE_DISTANCE}, {"ai_stuck_speed", &AI_STUCK_SPEED}, 
+        {"ai_overshoot_speed", &AI_OVERSHOOT_SPEED},
+        {"ai_follow_distance_near", &AI_FOLLOW_DISTANCE_NEAR}, {"ai_follow_distance_medium", &AI_FOLLOW_DISTANCE_MEDIUM},
+        {"ai_follow_distance_far", &AI_FOLLOW_DISTANCE_FAR}, {"ai_follow_speed_near", &AI_FOLLOW_SPEED_NEAR},
+        {"ai_follow_speed_medium", &AI_FOLLOW_SPEED_MEDIUM}, {"ai_follow_speed_far", &AI_FOLLOW_SPEED_FAR},
+        {"ai_aggression_radius0", &AI_AGGRESSION_RADIUS0},
+        {"ai_aggression_radius1", &AI_AGGRESSION_RADIUS1}, {"ai_aggression_radius2", &AI_AGGRESSION_RADIUS2},
+        {"chatter_multiplier", &CHATTER_MULTIPLIER}, {"chatter_multiplier_sneak", &CHATTER_MULTIPLIER_SNEAK},
+        {"combat_offensive", &COMBATSTYLE_OFFENSIVE}, {"combat_defensive", &COMBATSTYLE_DEFENSIVE},
+        {"combat_ranged_weapon", &COMBATSTYLE_RANGED_WEAPON}, {"combat_melee_weapon", &COMBATSTYLE_MELEE_WEAPON},
+        {"combat_ranged_adjustment", &COMBATSTYLE_RANGED_ADJUSTMENT}, {"combat_ranged_crouching", &COMBATSTYLE_RANGED_CROUCHING},
+        {"combat_ranged_strafe", &COMBATSTYLE_RANGED_STRAFE}, {"combat_ranged_waiting", &COMBATSTYLE_RANGED_WAITING},
+        {"combat_ranged_accuracy", &COMBATSTYLE_RANGED_ACCURACY}, {"combat_close_fallback", &COMBATSTYLE_CLOSE_FALLBACK},
+        {"combat_close_circle", &COMBATSTYLE_CLOSE_CIRCLE}, {"combat_close_disengage", &COMBATSTYLE_CLOSE_DISENGAGE},
+        {"combat_close_flank", &COMBATSTYLE_CLOSE_FLANK}, {"combat_cover_distance", &COMBATSTYLE_COVER_DISTANCE},
+        {"loot_radius", &LOOT_RADIUS}, {"xp_ratio", &XP_RATIO}, {"xp_killer_tolerance", &XP_KILLER_TOLERANCE},
+        {"pa_repair_amount", &PA_REPAIR_AMOUNT}, {"buff_heal_rate", &BUFF_HEAL_RATE}, {"buff_health", &BUFF_HEALTH},
+        {"buff_combat_heal_rate", &BUFF_COMBAT_HEAL_RATE}, {"buff_damage_resist", &BUFF_DAMAGE_RESIST},
+        {"buff_fire_resist", &BUFF_FIRE_RESIST}, {"buff_electrical_resist", &BUFF_ELECTRICAL_RESIST},
+        {"buff_frost_resist", &BUFF_FROST_RESIST}, {"buff_energy_resist", &BUFF_ENERGY_RESIST},
+        {"buff_poison_resist", &BUFF_POISON_RESIST}, {"buff_radiation_resist", &BUFF_RADIATION_RESIST},
+        {"buff_agility", &BUFF_AGILITY}, {"buff_endurance", &BUFF_ENDURANCE},
+        {"buff_intelligence", &BUFF_INTELLIGENCE}, {"buff_lockpick", &BUFF_LOCKPICK},
+        {"buff_luck", &BUFF_LUCK}, {"buff_perception", &BUFF_PERCEPTION},
+        {"buff_strength", &BUFF_STRENGTH}, {"buff_sneak", &BUFF_SNEAK},
+        {"buff_carryweight", &BUFF_CARRYWEIGHT}, {"threat_weapon_bonus", &THREAT_WEAPON_BONUS},
+        {"threat_legendary_bonus", &THREAT_LEGENDARY_BONUS}, {"threat_unique_bonus", &THREAT_UNIQUE_BONUS},
+        {"threat_health_bonus", &THREAT_HEALTH_BONUS}, {"threat_alert_bonus", &THREAT_ALERT_BONUS}
+    };
+    // Integer Map
+    std::unordered_map<std::string, int*> intMap = {
+        {"ini_reload_interval", &INI_RELOAD_INTERVAL}, {"ai_equip_ammo_amount", &AI_EQUIP_AMMO_AMOUNT},
+        {"ai_stuck_threshold", &AI_STUCK_THRESHOLD}, {"ai_stuck_collisions", &AI_STUCK_COLLISIONS},
+        {"ai_follow_distance_general", &AI_FOLLOW_DISTANCE_GENERAL}, {"ai_follow_distance_interiors", &AI_FOLLOW_DISTANCE_INTERIORS},
+        {"combat_target", &COMBATSTYLE_TARGET}, {"combat_close_throw_grenade", &COMBATSTYLE_CLOSE_THROW_GRENADE},
+        {"loot_min_value", &LOOT_MIN_VALUE}, {"loot_max_value", &LOOT_MAX_VALUE}
+    };
+    // Hex Map for single uint32_t values
+    std::unordered_map<std::string, uint32_t*> hexMap = {
+        {"current_companion_faction_id", &CURRENT_COMPANION_FACTION_ID},
+        {"actorvalue_hc_downed_id", &ACTORVALUE_HC_DOWNED_ID},
+        {"actorvalue_followerstate_id", &ACTORVALUE_FOLLOWERSTATE_ID},
+        {"actorvalue_followerdistance_id", &ACTORVALUE_FOLLOWERDISTANCE_ID},
+        {"actorvalue_followerstance_id", &ACTORVALUE_FOLLOWERSTANCE_ID},
+        {"item_stimpak_id", &ITEM_STIMPAK_ID},
+        {"item_repairkit_id", &ITEM_REPAIRKIT_ID},
+        {"idle_stimpak_id", &IDLE_STIMPAK_ID},
+        {"kywd_armortypepower_id", &KYWD_ARMORTYPEPOWER_ID},
+        {"kywd_ispowerarmorframe_id", &KYWD_ISPOWERARMORFRAME_ID},
+        {"kywd_animal_id", &KYWD_ANIMAL_ID},
+        {"kywd_robot_id", &KYWD_ROBOT_ID},
+        {"kywd_synth_id", &KYWD_SYNTH_ID},
+        {"pack_followerscompanion_id", &PACK_FOLLOWERSCOMPANION_ID},
+        // Follower Global Variables (States)
+        {"global_com_follow_id", &GLOBAL_COM_FOLLOW_ID},
+        {"global_com_gohome_id", &GLOBAL_COM_GOHOME_ID},
+        {"global_com_wait_id", &GLOBAL_COM_WAIT_ID},
+        {"global_com_distfar_id", &GLOBAL_COM_DISTFAR_ENUM_ID},
+        {"global_com_distmedium_id", &GLOBAL_COM_DISTMEDIUM_ENUM_ID},
+        {"global_com_distnear_id", &GLOBAL_COM_DISTNEAR_ENUM_ID},
+        // Follower stances
+        {"global_com_stanceaggro_id", &GLOBAL_COM_STANCEAGGRO_ID},
+        {"global_com_stancecombatfalse_id", &GLOBAL_COM_STANCECOMBATFALSE_ID},
+        {"global_com_stancecombattrue_id", &GLOBAL_COM_STANCECOMBATTRUE_ID},
+        {"global_com_stancedefensive_id", &GLOBAL_COM_STANCEDEFENSIVE_ID},
+        // Follower distances (The static floats)
+        {"global_com_distfar_val_id", &GLOBAL_COM_DISTFAR_VAL_ID},
+        {"global_com_distmedium_val_id", &GLOBAL_COM_DISTMEDIUM_VAL_ID},
+        {"global_com_distnear_val_id", &GLOBAL_COM_DISTNEAR_VAL_ID}
+    };
+    // Vector Map for lists of uint32_t
+    std::unordered_map<std::string, std::vector<uint32_t>*> vectorMap = {
+        {"perk_to_apply", &PERK_ID_LIST},
+        {"keyword_to_apply", &KEYWORD_ID_LIST},
+        {"exclude_actor_id_list", &EXCLUDE_ACTOR_ID_LIST},
+        {"race_stimpak_id", &RACE_STIMPAK_ID},
+        {"kywd_lootexclude_id", &KYWD_LOOTEXCLUDE_ID_LIST},
+        {"item_lootalways_id", &ITEM_LOOTALWAYS_ID_LIST}
+    };
+    // Keep track of which vectors have been cleared
+    std::set<std::string> clearedVectors;
+    // First try to open the stream directly read only
+    std::ifstream file(configPath, std::ios::in);
     // Check if the file opened successfully
     if (!file.is_open()) {
-        REX::WARN("LoadConfig: Could not open INI file: {}. Creating default.", configPath);
-        // Create the file with defaultIni contents
+        REX::WARN("LoadConfig: Could not open INI file: {}. Creating default.", configPath.string());
+        // Create the file with defaultIni contents if it doesn't exist
         std::ofstream out(configPath);
         if (out.is_open()) {
             out << defaultIni;
+            out.flush();
             out.close();
-            REX::INFO("LoadConfig: Default INI created at: {}", configPath);
+            REX::INFO("LoadConfig: Default INI created at: {}", configPath.string());
         } else {
-            REX::WARN("LoadConfig: Failed to create default INI at: {}", configPath);
+            REX::WARN("LoadConfig: Failed to create default INI at: {}", configPath.string());
             return;
         }
-        // Try to open again for reading
-        file.open(configPath);
+        // Clear the failed stream state
+        file.clear();
+        // Try to open again for reading and give up if it fails again
+        file.open(configPath, std::ios::in);
         if (!file.is_open()) {
-            REX::WARN("LoadConfig: Still could not open INI file after creating default: {}", configPath);
+            REX::WARN("LoadConfig: Still could not open INI file after creating default: {}", configPath.string());
             return;
         }
     }
-    std::string line;
-    while (std::getline(file, line)) {
-        // Trim whitespace
-        line.erase(0, line.find_first_not_of(" \t\r\n"));
-        line.erase(line.find_last_not_of(" \t\r\n") + 1);
-        // Skip comments and empty lines
-        if (line.empty() || line[0] == ';')
-            continue;
-        // Lower case for case-insensitive comparison
-        std::string lowerLine = ToLower(line);
-        // --- Debugging flag ---
-        if (lowerLine.find("debugging") == 0) {
-            std::string value = GetValueFromLine(line);
-            if (ToLower(value) == "true" || value == "1") {
-                DEBUGGING = true;
-            } else {
-                DEBUGGING = false;
+    // Read the lines
+    if (file.is_open()) {
+        std::string line;
+        while (std::getline(file, line)) {
+            // Skip for empty lines or comments starting with ';' or section headers '['
+            size_t first = line.find_first_not_of(" \t\r\n");
+            if (first == std::string::npos || line[first] == ';' || line[first] == '[') continue;
+            // Extract Key and Value
+            std::string key = GetKeyFromLine(line); // Already ToLower inside helper
+            std::string val = GetValueFromLine(line);
+            if (key.empty()) continue;
+            // Process based on type
+            if (boolMap.count(key)) { 
+                *boolMap[key] = (ToLower(val) == "true" || val == "1"); 
             }
-            continue;
-        }
-        if (lowerLine.find("timer_delay") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                float delay = std::stof(value);
-                if (delay >= 0) {
-                    TIMER_DELAY = delay;
-                } else {
-                    REX::WARN("LoadConfig: Invalid Timer Delay value: {}. Must be non-negative.", value);
+            else if (floatMap.count(key)) { 
+                try { *floatMap[key] = std::stof(val); } catch (...) {} 
+            }
+            else if (intMap.count(key)) { 
+                try { *intMap[key] = std::stoi(val); } catch (...) {} 
+            }
+            else if (hexMap.count(key)) { 
+                try { *hexMap[key] = std::stoul(val, nullptr, 16); } catch (...) {} 
+            }
+            else if (vectorMap.count(key)) {
+                if (clearedVectors.find(key) == clearedVectors.end()) {
+                    vectorMap[key]->clear();
+                    clearedVectors.insert(key);
                 }
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Timer Delay value: {}. Exception: {}", value, e.what());
+                try { vectorMap[key]->push_back(std::stoul(val, nullptr, 16)); } catch (...) {}
             }
-            continue;
-        }
-
-        // --- Update Interval ---
-        if (lowerLine.find("update_interval") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                float interval = std::stof(value);
-                if (interval > 0.0f) {
-                    UPDATE_INTERVAL = interval;
-                } else {
-                    REX::WARN("LoadConfig: Invalid Update Interval value: {}. Must be positive.", value);
+            // Special Case: Comma-separated Integers
+            else if (key == "ai_equip_slots") {
+                if (clearedVectors.find(key) == clearedVectors.end()) {
+                    AI_EQUIP_SLOTS.clear();
+                    clearedVectors.insert(key);
                 }
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Update Interval value: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        if (lowerLine.find("ini_reload_interval") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                int interval = std::stoi(value);
-                if (interval >= 0) {
-                    INI_RELOAD_INTERVAL = interval;
-                } else {
-                    REX::WARN("LoadConfig: Invalid INI Reload Interval value: {}. Must be non-negative.", value);
+                std::stringstream ss(val);
+                std::string s;
+                while (std::getline(ss, s, ',')) { 
+                    try { AI_EQUIP_SLOTS.push_back(std::stoi(s)); } catch (...) {} 
                 }
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing INI Reload Interval value: {}. Exception: {}", value, e.what());
             }
-            continue;
-        }
-        if (lowerLine.find("actor_search_radius") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                float radius = std::stof(value);
-                if (radius > 0.0f) {
-                    ACTOR_SEARCH_RADIUS = radius;
-                } else {
-                    REX::WARN("LoadConfig: Invalid Actor Search Radius value: {}. Must be positive.", value);
+            // Special Case: Form Type Strings (Using native game function)
+            else if (key == "form_type_loot") {
+                if (clearedVectors.find(key) == clearedVectors.end()) {
+                    LOOTABLE_FORM_TYPES.clear();
+                    clearedVectors.insert(key);
                 }
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Actor Search Radius value: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-
-        // --- AI Behavior Settings ---
-        if (lowerLine.find("ai_health_threshold") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                float threshold = std::stof(value);
-                if (threshold >= 0.0f && threshold <= 100.0f) {
-                    AI_HEALTH_THRESHOLD = threshold;
-                } else {
-                    REX::WARN("LoadConfig: Invalid AI Health Threshold value: {}. Must be between 0 and 100.", value);
-                }
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing AI Health Threshold value: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        if (lowerLine.find("ai_use_stimpak_enabled") == 0) {
-            std::string value = GetValueFromLine(line);
-            if (ToLower(value) == "true" || value == "1") {
-                AI_USE_STIMPAK_ENABLED = true;
-            } else {
-                AI_USE_STIMPAK_ENABLED = false;
-            }
-            continue;
-        }
-        if (lowerLine.find("ai_use_stimpak_unlimited") == 0) {
-            std::string value = GetValueFromLine(line);
-            if (ToLower(value) == "true" || value == "1") {
-                AI_USE_STIMPAK_UNLIMITED = true;
-            } else {
-                AI_USE_STIMPAK_UNLIMITED = false;
-            }
-            continue;
-        }
-        if (lowerLine.find("ai_auto_revive") == 0) {
-            std::string value = GetValueFromLine(line);
-            if (ToLower(value) == "true" || value == "1") {
-                AI_AUTO_REVIVE = true;
-            } else {
-                AI_AUTO_REVIVE = false;
-            }
-            continue;
-        }
-        if (lowerLine.find("ai_flee_combat") == 0) {
-            std::string value = GetValueFromLine(line);
-            if (ToLower(value) == "true" || value == "1") {
-                AI_FLEE_COMBAT = true;
-            } else {
-                AI_FLEE_COMBAT = false;
-            }
-            continue;
-        }
-        if (lowerLine.find("ai_flee_distance") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                float distance = std::stof(value);
-                if (distance > 0.0f) {
-                    AI_FLEE_DISTANCE = distance;
-                } else {
-                    REX::WARN("LoadConfig: Invalid AI Flee Distance value: {}. Must be positive.", value);
-                }
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing AI Flee Distance value: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        if (lowerLine.find("ai_equip_armor") == 0) {
-            std::string value = GetValueFromLine(line);
-            if (ToLower(value) == "true" || value == "1") {
-                AI_EQUIP_ARMOR = true;
-            } else {
-                AI_EQUIP_ARMOR = false;
-            }
-            continue;
-        }
-        if (lowerLine.find("ai_equip_weapon") == 0) {
-            std::string value = GetValueFromLine(line);
-            if (ToLower(value) == "true" || value == "1") {
-                AI_EQUIP_WEAPON = true;
-            } else {
-                AI_EQUIP_WEAPON = false;
-            }
-            continue;
-        }
-        if (lowerLine.find("ai_equip_slots") == 0) {
-            std::string value = GetValueFromLine(line);
-            AI_EQUIP_SLOTS.clear();
-            std::istringstream ss(value);
-            std::string slotStr;
-            while (std::getline(ss, slotStr, ',')) {
                 try {
-                    int slot = std::stoi(slotStr);
-                    AI_EQUIP_SLOTS.push_back(slot);
-                } catch (const std::exception& e) {
-                    REX::WARN("LoadConfig: Error parsing AI Equip Slot value: {}. Exception: {}", slotStr, e.what());
-                }
+                    RE::ENUM_FORM_ID formType = RE::TESForm::GetFormTypeFromString(val.c_str());
+                    LOOTABLE_FORM_TYPES.push_back(formType);
+                } catch (...) {}
             }
-            continue;
-        }
-        if (lowerLine.find("ai_equip_ammo_refill") == 0) {
-            std::string value = GetValueFromLine(line);
-            if (ToLower(value) == "true" || value == "1") {
-                AI_EQUIP_AMMO_REFILL = true;
-            } else {
-                AI_EQUIP_AMMO_REFILL = false;
-            }
-            continue;
-        }
-        if (lowerLine.find("ai_equip_ammo_amount") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                int amount = std::stoi(value);
-                if (amount > 0) {
-                    AI_EQUIP_AMMO_AMOUNT = amount;
-                } else {
-                    REX::WARN("LoadConfig: Invalid AI Equip Ammo Amount value: {}. Must be positive.", value);
-                }
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing AI Equip Ammo Amount value: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        // Movement settings
-        if (lowerLine.find("ai_stuck_check") == 0) {
-            std::string value = GetValueFromLine(line);
-            if (ToLower(value) == "true" || value == "1") {
-                AI_STUCK_CHECK = true;
-            } else {
-                AI_STUCK_CHECK = false;
-            }
-            continue;
-        }
-        if (lowerLine.find("ai_stuck_threshold") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                int threshold = std::stoi(value);
-                if (threshold >= 0) {
-                    AI_STUCK_THRESHOLD = threshold;
-                } else {
-                    REX::WARN("LoadConfig: Invalid AI Stuck Threshold value: {}. Must be non-negative.", value);
-                }
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing AI Stuck Threshold value: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        if (lowerLine.find("ai_stuck_collisions") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                int collisions = std::stoi(value);
-                if (collisions >= 0) {
-                    AI_STUCK_COLLISIONS = collisions;
-                } else {
-                    REX::WARN("LoadConfig: Invalid AI Stuck Collisions value: {}. Must be non-negative.", value);
-                }
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing AI Stuck Collisions value: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        if (lowerLine.find("ai_stuck_speed") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                float speed = std::stof(value);
-                if (speed >= 0.0f) {
-                    AI_STUCK_SPEED = speed;
-                } else {
-                    REX::WARN("LoadConfig: Invalid AI Stuck Speed value: {}. Must be non-negative.", value);
-                }
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing AI Stuck Speed value: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        if (lowerLine.find("ai_stuck_distance") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                float distance = std::stof(value);
-                if (distance > 0.0f) {
-                    AI_STUCK_DISTANCE = distance;
-                } else {
-                    REX::WARN("LoadConfig: Invalid AI Stuck Distance value: {}. Must be positive.", value);
-                }
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing AI Stuck Distance value: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-
-        // Aggression settings
-        if (lowerLine.find("ai_aggression_enabled") == 0) {
-            std::string value = GetValueFromLine(line);
-            if (ToLower(value) == "true" || value == "1") {
-                AI_AGGRESSION_ENABLED = true;
-            } else {
-                AI_AGGRESSION_ENABLED = false;
-            }
-            continue;
-        }
-        if (lowerLine.find("ai_aggression_all") == 0) {
-            std::string value = GetValueFromLine(line);
-            if (ToLower(value) == "true" || value == "1") {
-                AI_AGGRESSION_ALL = true;
-            } else {
-                AI_AGGRESSION_ALL = false;
-            }
-            continue;
-        }
-        if (lowerLine.find("ai_aggression_sneak") == 0) {
-            std::string value = GetValueFromLine(line);
-            if (ToLower(value) == "true" || value == "1") {
-                AI_AGGRESSION_SNEAK = true;
-            } else {
-                AI_AGGRESSION_SNEAK = false;
-            }
-            continue;
-        }
-        if (lowerLine.find("ai_aggression_radius0") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                float radius = std::stof(value);
-                if (radius > 0.0f) {
-                    AI_AGGRESSION_RADIUS0 = radius;
-                } else {
-                    REX::WARN("LoadConfig: Invalid AI Aggression Radius0 value: {}. Must be positive.", value);
-                }
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing AI Aggression Radius0 value: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        if (lowerLine.find("ai_aggression_radius1") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                float radius = std::stof(value);
-                if (radius > 0.0f) {
-                    AI_AGGRESSION_RADIUS1 = radius;
-                } else {
-                    REX::WARN("LoadConfig: Invalid AI Aggression Radius1 value: {}. Must be positive.", value);
-                }
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing AI Aggression Radius1 value: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        if (lowerLine.find("ai_aggression_radius2") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                float radius = std::stof(value);
-                if (radius > 0.0f) {
-                    AI_AGGRESSION_RADIUS2 = radius;
-                } else {
-                    REX::WARN("LoadConfig: Invalid AI Aggression Radius2 value: {}. Must be positive.", value);
-                }
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing AI Aggression Radius2 value: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-
-        // Chatter settings
-        if (lowerLine.find("chatter_enabled") == 0) {
-            std::string value = GetValueFromLine(line);
-            if (ToLower(value) == "true" || value == "1") {
-                CHATTER_ENABLED = true;
-            } else {
-                CHATTER_ENABLED = false;
-            }
-            continue;
-        }
-        if (lowerLine.find("chatter_multiplier") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                float multiplier = std::stof(value);
-                if (multiplier > 0.0f) {
-                    CHATTER_MULTIPLIER = multiplier;
-                } else {
-                    REX::WARN("LoadConfig: Invalid Chatter Multiplier value: {}. Must be positive.", value);
-                }
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Chatter Multiplier value: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        if (lowerLine.find("chatter_multiplier_sneak") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                float multiplier = std::stof(value);
-                if (multiplier > 0.0f) {
-                    CHATTER_MULTIPLIER_SNEAK = multiplier;
-                } else {
-                    REX::WARN("LoadConfig: Invalid Chatter Multiplier Sneak value: {}. Must be positive.", value);
-                }
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Chatter Multiplier Sneak value: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-
-        // --- Combat AI Settings ---
-        if (lowerLine.find("combat_enabled") == 0) {
-            std::string value = GetValueFromLine(line);
-            if (ToLower(value) == "true" || value == "1") {
-                COMBAT_ENABLED = true;
-            } else {
-                COMBAT_ENABLED = false;
-            }
-            continue;
-        }
-        if (lowerLine.find("combat_target") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                int target = std::stoi(value);
-                if (target >= 0 && target <= 2) {
-                    COMBAT_TARGET = target;
-                } else {
-                    REX::WARN("LoadConfig: Invalid Combat Target value: {}. Must be 0 (Nearest), 1 (Lowest Threat), or 2 (Highest Threat).", value);
-                }
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Combat Target value: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        if (lowerLine.find("combat_offensive") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                float offensive = std::stof(value);
-                if (offensive >= 0.0f && offensive <= 1.0f) {
-                    COMBAT_OFFENSIVE = offensive;
-                } else {
-                    REX::WARN("LoadConfig: Invalid Combat Offensive value: {}. Must be between 0.0 and 1.0.", value);
-                }
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Combat Offensive value: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        if (lowerLine.find("combat_defensive") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                float defensive = std::stof(value);
-                if (defensive >= 0.0f && defensive <= 1.0f) {
-                    COMBAT_DEFENSIVE = defensive;
-                } else {
-                    REX::WARN("LoadConfig: Invalid Combat Defensive value: {}. Must be between 0.0 and 1.0.", value);
-                }
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Combat Defensive value: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        if (lowerLine.find("combat_ranged") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                float ranged = std::stof(value);
-                if (ranged >= 0.0f && ranged <= 1.0f) {
-                    COMBAT_RANGED = ranged;
-                } else {
-                    REX::WARN("LoadConfig: Invalid Combat Ranged value: {}. Must be between 0.0 and 1.0.", value);
-                }
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Combat Ranged value: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        if (lowerLine.find("combat_melee") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                float melee = std::stof(value);
-                if (melee >= 0.0f && melee <= 1.0f) {
-                    COMBAT_MELEE = melee;
-                } else {
-                    REX::WARN("LoadConfig: Invalid Combat Melee value: {}. Must be between 0.0 and 1.0.", value);
-                }
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Combat Melee value: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        // --- Ranged Combat Modifiers ---
-        if (lowerLine.find("combat_ranged_adjustment") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                COMBAT_RANGED_ADJUSTMENT = std::stof(value);
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Combat Ranged Adjustment value: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        if (lowerLine.find("combat_ranged_crouching") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                COMBAT_RANGED_CROUCHING = std::stof(value);
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Combat Ranged Crouching value: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        if (lowerLine.find("combat_ranged_strafe") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                COMBAT_RANGED_STRAFE = std::stof(value);
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Combat Ranged Strafe value: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        if (lowerLine.find("combat_ranged_waiting") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                COMBAT_RANGED_WAITING = std::stof(value);
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Combat Ranged Waiting value: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        if (lowerLine.find("combat_ranged_accuracy") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                COMBAT_RANGED_ACCURACY = std::stof(value);
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Combat Ranged Accuracy value: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        // --- Close-Quarters Combat Modifiers ---
-        if (lowerLine.find("combat_close_fallback") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                COMBAT_CLOSE_FALLBACK = std::stof(value);
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Combat Close Fallback value: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        if (lowerLine.find("combat_close_circle") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                COMBAT_CLOSE_CIRCLE = std::stof(value);
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Combat Close Circle value: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        if (lowerLine.find("combat_close_disengage") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                COMBAT_CLOSE_DISENGAGE = std::stof(value);
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Combat Close Disengage value: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        if (lowerLine.find("combat_close_flank") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                COMBAT_CLOSE_FLANK = std::stof(value);
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Combat Close Flank value: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        if (lowerLine.find("combat_close_throw_grenade") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                COMBAT_CLOSE_THROW_GRENADE = std::stoi(value);
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Combat Close Throw Grenade value: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        // --- Cover Combat Modifiers ---
-        if (lowerLine.find("combat_cover_distance") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                COMBAT_COVER_DISTANCE = std::stof(value);
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Combat Cover Distance value: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-
-        // --- Loot Settings ---
-        if (lowerLine.find("loot_enabled") == 0) {
-            std::string value = GetValueFromLine(line);
-            if (ToLower(value) == "true" || value == "1") {
-                LOOT_ENABLED = true;
-            } else {
-                LOOT_ENABLED = false;
-            }
-            continue;
-        }
-        if (lowerLine.find("loot_combat") == 0) {
-            std::string value = GetValueFromLine(line);
-            if (ToLower(value) == "true" || value == "1") {
-                LOOT_COMBAT = true;
-            } else {
-                LOOT_COMBAT = false;
-            }
-            continue;
-        }
-        if (lowerLine.find("loot_radius") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                LOOT_RADIUS = std::stof(value);
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Loot Radius: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        if (lowerLine.find("loot_junk") == 0) {
-            std::string value = GetValueFromLine(line);
-            if (ToLower(value) == "true" || value == "1") {
-                LOOT_JUNK = true;
-            } else {
-                LOOT_JUNK = false;
-            }
-            continue;
-        }
-        if (lowerLine.find("loot_ammo") == 0) {
-            std::string value = GetValueFromLine(line);
-            if (ToLower(value) == "true" || value == "1") {
-                LOOT_AMMO = true;
-            } else {
-                LOOT_AMMO = false;
-            }
-            continue;
-        }
-        if (lowerLine.find("loot_aid") == 0) {
-            std::string value = GetValueFromLine(line);
-            if (ToLower(value) == "true" || value == "1") {
-                LOOT_AID = true;
-            } else {
-                LOOT_AID = false;
-            }
-            continue;
-        }
-        if (lowerLine.find("loot_gear") == 0) {
-            std::string value = GetValueFromLine(line);
-            if (ToLower(value) == "true" || value == "1") {
-                LOOT_GEAR = true;
-            } else {
-                LOOT_GEAR = false;
-            }
-            continue;
-        }
-        if (lowerLine.find("loot_min_value") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                LOOT_MIN_VALUE = std::stoi(value);
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Loot Min Value: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        if (lowerLine.find("loot_max_value") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                LOOT_MAX_VALUE = std::stoi(value);
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Loot Max Value: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        if (lowerLine.find("loot_steal") == 0) {
-            std::string value = GetValueFromLine(line);
-            if (ToLower(value) == "true" || value == "1") {
-                LOOT_STEAL = true;
-            } else {
-                LOOT_STEAL = false;
-            }
-            continue;
-        }
-        if (lowerLine.find("loot_weight_limit") == 0) {
-            std::string value = GetValueFromLine(line);
-            if (ToLower(value) == "true" || value == "1") {
-                LOOT_WEIGHT_LIMIT = true;
-            } else {
-                LOOT_WEIGHT_LIMIT = false;
-            }
-            continue;
-        }
-
-        // --- XP Gain Settings ---
-        if (lowerLine.find("xp_enabled") == 0) {
-            std::string value = GetValueFromLine(line);
-            if (ToLower(value) == "true" || value == "1") {
-                XP_ENABLED = true;
-            } else {
-                XP_ENABLED = false;
-            }
-            continue;
-        }
-        if (lowerLine.find("xp_ratio") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                XP_RATIO = std::stof(value);
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing XP Ratio: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        if (lowerLine.find("xp_killer_tolerance") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                XP_KILLER_TOLERANCE = std::stof(value);
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing XP Killer Tolerance: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-
-        // --- Buff Settings ---
-        if (lowerLine.find("buff_enabled") == 0) {
-            std::string value = GetValueFromLine(line);
-            if (ToLower(value) == "true" || value == "1") {
-                BUFF_ENABLED = true;
-            } else {
-                BUFF_ENABLED = false;
-            }
-            continue;
-        }
-        if (lowerLine.find("buff_set_values") == 0) {
-            std::string value = GetValueFromLine(line);
-            if (ToLower(value) == "true" || value == "1") {
-                BUFF_SET_VALUES = true;
-            } else {
-                BUFF_SET_VALUES = false;
-            }
-            continue;
-        }
-        if (lowerLine.find("buff_heal_rate") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                BUFF_HEAL_RATE = std::stof(value);
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Buff Heal Rate: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        if (lowerLine.find("buff_combat_heal_rate") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                BUFF_COMBAT_HEAL_RATE = std::stof(value);
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Buff Combat Heal Rate: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        if (lowerLine.find("buff_damage_resist") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                BUFF_DAMAGE_RESIST = std::stof(value);
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Buff Damage Resist: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        if (lowerLine.find("buff_fire_resist") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                BUFF_FIRE_RESIST = std::stof(value);
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Buff Fire Resist: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        if (lowerLine.find("buff_electrical_resist") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                BUFF_ELECTRICAL_RESIST = std::stof(value);
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Buff Electrical Resist: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        if (lowerLine.find("buff_frost_resist") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                BUFF_FROST_RESIST = std::stof(value);
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Buff Frost Resist: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        if (lowerLine.find("buff_energy_resist") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                BUFF_ENERGY_RESIST = std::stof(value);
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Buff Energy Resist: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        if (lowerLine.find("buff_poison_resist") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                BUFF_POISON_RESIST = std::stof(value);
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Buff Poison Resist: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        if (lowerLine.find("buff_radiation_resist") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                BUFF_RADIATION_RESIST = std::stof(value);
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Buff Radiation Resist: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        if (lowerLine.find("buff_agility") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                BUFF_AGILITY = std::stof(value);
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Buff Agility: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        if (lowerLine.find("buff_endurance") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                BUFF_ENDURANCE = std::stof(value);
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Buff Endurance: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        if (lowerLine.find("buff_intelligence") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                BUFF_INTELLIGENCE = std::stof(value);
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Buff Intelligence: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        if (lowerLine.find("buff_lockpick") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                BUFF_LOCKPICK = std::stof(value);
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Buff Lockpick: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        if (lowerLine.find("buff_luck") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                BUFF_LUCK = std::stof(value);
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Buff Luck: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        if (lowerLine.find("buff_perception") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                BUFF_PERCEPTION = std::stof(value);
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Buff Perception: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        if (lowerLine.find("buff_sneak") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                BUFF_SNEAK = std::stof(value);
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Buff Sneak: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        if (lowerLine.find("buff_strength") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                BUFF_STRENGTH = std::stof(value);
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Buff Strength: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        if (lowerLine.find("buff_carryweight") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                BUFF_CARRYWEIGHT = std::stof(value);
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Buff Carry Weight: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-
-        // --- Power Armor Settings ---
-        if (lowerLine.find("pa_enabled") == 0) {
-            std::string value = GetValueFromLine(line);
-            if (ToLower(value) == "true" || value == "1") {
-                PA_ENABLED = true;
-            } else {
-                PA_ENABLED = false;
-            }
-            continue;
-        }
-        if (lowerLine.find("pa_repair_amount") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                PA_REPAIR_AMOUNT = std::stof(value);
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Power Armor Repair Amount: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-
-        // --- Perk Settings ---
-        if (lowerLine.find("perk_enabled") == 0) {
-            std::string value = GetValueFromLine(line);
-            if (ToLower(value) == "true" || value == "1") {
-                PERK_ENABLED = true;
-            } else {
-                PERK_ENABLED = false;
-            }
-            continue;
-        }
-        if (lowerLine.find("perk_to_apply") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                std::uint32_t perkId = ParseHexFormID(value);
-                PERK_ID_LIST.push_back(perkId);
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Perk ID: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-
-        // -- Keyword Settings ---
-        if (lowerLine.find("keyword_enabled") == 0) {
-            std::string value = GetValueFromLine(line);
-            if (ToLower(value) == "true" || value == "1") {
-                KEYWORD_ENABLED = true;
-            } else {
-                KEYWORD_ENABLED = false;
-            }
-            continue;
-        }
-        if (lowerLine.find("keyword_to_apply") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                std::uint32_t keywordId = ParseHexFormID(value);
-                KEYWORD_ID_LIST.push_back(keywordId);
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Keyword ID: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-
-        // --- Form IDs of actors to exlude from the mod ---
-        if (lowerLine.find("exclude_actor_id_list") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                std::uint32_t actorId = ParseHexFormID(value);
-                EXCLUDE_ACTOR_ID_LIST.push_back(actorId);
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Actor ID: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-
-        // --- Threat Score Weights ---
-        if (lowerLine.find("threat_weapon_bonus") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                THREAT_WEAPON_BONUS = std::stof(value);
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Threat Weapon Bonus value: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        if (lowerLine.find("threat_legendary_bonus") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                THREAT_LEGENDARY_BONUS = std::stof(value);
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Threat Legendary Bonus value: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        if (lowerLine.find("threat_unique_bonus") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                THREAT_UNIQUE_BONUS = std::stof(value);
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Threat Unique Bonus value: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        if (lowerLine.find("threat_health_bonus") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                THREAT_HEALTH_BONUS = std::stof(value);
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Threat Health Bonus value: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        if (lowerLine.find("threat_alert_bonus") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                THREAT_ALERT_BONUS = std::stof(value);
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Threat Alert Bonus value: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-
-        // DATA
-        if (lowerLine.find("companion_faction_id") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                CURRENT_COMPANION_FACTION_ID = ParseHexFormID(value);
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Companion Faction ID: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        if (lowerLine.find("actorvalue_hc_downed_id") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                ACTORVALUE_HC_DOWNED_ID = ParseHexFormID(value);
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing ActorValue HC Downed ID: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        if (lowerLine.find("item_stimpak") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                ITEM_STIMPAK_ID = ParseHexFormID(value);
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Stimpak Item ID: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        if (lowerLine.find("item_repairkit") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                ITEM_REPAIRKIT_ID = ParseHexFormID(value);
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Repair Kit Item ID: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        // Races for stimpak usage
-        if (lowerLine.find("race_stimpak_id") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                std::uint32_t raceId = ParseHexFormID(value);
-                RACE_STIMPAK_ID.push_back(raceId);
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Stimpak Race ID: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        // Animation IDs
-        if (lowerLine.find("anim_stimpak") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                IDLE_STIMPAK_ID = ParseHexFormID(value);
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Stimpak Animation ID: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        // Keywords
-        if (lowerLine.find("kywd_armortypepower_id") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                KYWD_ARMORTYPEPOWER_ID = ParseHexFormID(value);
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing PowerArmorType Keyword ID: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        if (lowerLine.find("kywd_ispowerarmorframe_id") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                KYWD_ISPOWERARMORFRAME_ID = ParseHexFormID(value);
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing IsPowerArmorFrame Keyword ID: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        if (lowerLine.find("kywd_animal_id") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                KYWD_ANIMAL_ID = ParseHexFormID(value);
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Animal Keyword ID: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        if (lowerLine.find("kywd_robot_id") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                KYWD_ROBOT_ID = ParseHexFormID(value);
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Robot Keyword ID: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        if (lowerLine.find("kywd_synth_id") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                KYWD_SYNTH_ID = ParseHexFormID(value);
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Synth Keyword ID: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-        if (lowerLine.find("kywd_lootexclude_id") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                std::uint32_t kywdid = ParseHexFormID(value);
-                KYWD_LOOTEXCLUDE_ID_LIST.push_back(kywdid);
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing LootExclude Keyword ID: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-
-        // Packages
-        if (lowerLine.find("pack_followerscompanion_id") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                PACK_FOLLOWERSCOMPANION_ID = ParseHexFormID(value);
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing FollowersCompanion Package ID: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-
-        // Always loot list
-        if (lowerLine.find("item_lootalways_id") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                std::uint32_t formId = ParseHexFormID(value);
-                ITEM_LOOTALWAYS_ID_LIST.push_back(formId);
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Always Loot Form ID: {}. Exception: {}", value, e.what());
-            }
-            continue;
-        }
-
-        // Lootable Form Types
-        if (lowerLine.find("form_type_loot") == 0) {
-            std::string value = GetValueFromLine(line);
-            try {
-                RE::ENUM_FORM_ID  formType = RE::TESForm::GetFormTypeFromString(value.c_str());
-                LOOTABLE_FORM_TYPES.push_back(formType);
-            } catch (const std::exception& e) {
-                REX::WARN("LoadConfig: Error parsing Lootable Form Type ID: {}. Exception: {}", value, e.what());
-            }
-            continue;
         }
     }
     file.close();
-    REX::INFO("LoadConfig: Completed loading config.");
-    REX::INFO(" - Debugging: {}", DEBUGGING);
-    REX::INFO(" - Update Interval: {} seconds", UPDATE_INTERVAL);
-    REX::INFO(" - Reload ini every {} updates.", INI_RELOAD_INTERVAL);
-    REX::INFO(" - Actor Search Radius: {}", ACTOR_SEARCH_RADIUS);
-    REX::INFO(" - AI Behavior: Threshold={}, UsesStimpak={}, UseStimpakUnlimited={}, AutoRevive={}, FleeCombat={},  FleeDistance={}, EquipArmor={}, EquipWeapon={}, EquipAmmoRefill={}, EquipAmmoAmount={}, StuckCheck={}, StuckThreshold={}, StuckCollisions={}, StuckSpeedThreshold={}, StuckDistance={}", AI_HEALTH_THRESHOLD, AI_USE_STIMPAK_ENABLED, AI_USE_STIMPAK_UNLIMITED, AI_AUTO_REVIVE, AI_FLEE_COMBAT, AI_FLEE_DISTANCE, AI_EQUIP_ARMOR, AI_EQUIP_WEAPON, AI_EQUIP_AMMO_REFILL, AI_EQUIP_AMMO_AMOUNT, AI_STUCK_CHECK, AI_STUCK_THRESHOLD, AI_STUCK_COLLISIONS, AI_STUCK_SPEED,
-              AI_STUCK_DISTANCE);
-    REX::INFO(" - AI Aggression Settings: Enabled={}, All={}, AggressionSneak={}, AggressionRadius0={}, AggressionRadius1={}, AggressionRadius2={}", AI_AGGRESSION_ENABLED, AI_AGGRESSION_ALL, AI_AGGRESSION_SNEAK, AI_AGGRESSION_RADIUS0, AI_AGGRESSION_RADIUS1, AI_AGGRESSION_RADIUS2);
-    REX::INFO(" - Chatter Settings: Enabled={}, Chatter Multiplier={}, Sneak Multiplier={}", CHATTER_ENABLED, CHATTER_MULTIPLIER, CHATTER_MULTIPLIER_SNEAK);
-    REX::INFO(" - Combat AI: Enabled={}, Target={}, Offensive={}, Defensive={}, Ranged={}, Melee={}", COMBAT_ENABLED, COMBAT_TARGET, COMBAT_OFFENSIVE, COMBAT_DEFENSIVE, COMBAT_RANGED, COMBAT_MELEE);
-    REX::INFO("   - Ranged Modifiers: Adjustment={}, Crouching={}, Strafe={}, Waiting={}, Accuracy={}", COMBAT_RANGED_ADJUSTMENT, COMBAT_RANGED_CROUCHING, COMBAT_RANGED_STRAFE, COMBAT_RANGED_WAITING, COMBAT_RANGED_ACCURACY);
-    REX::INFO("   - Close-Quarters Modifiers: Fallback={}, Circle={}, Disengage={}, Flank={}, ThrowGrenade={}", COMBAT_CLOSE_FALLBACK, COMBAT_CLOSE_CIRCLE, COMBAT_CLOSE_DISENGAGE, COMBAT_CLOSE_FLANK, COMBAT_CLOSE_THROW_GRENADE);
-    REX::INFO("   - Cover Modifiers: Distance={}", COMBAT_COVER_DISTANCE);
-    REX::INFO(" - Loot Settings: Enabled={}, Combat={}, Radius={}, Junk={}, Ammo={}, Aid={}, Gear={}, MinValue={}, MaxValue={}, Steal={}, WeightLimit={}", LOOT_ENABLED, LOOT_COMBAT, LOOT_RADIUS, LOOT_JUNK, LOOT_AMMO, LOOT_AID, LOOT_GEAR, LOOT_MIN_VALUE, LOOT_MAX_VALUE, LOOT_STEAL, LOOT_WEIGHT_LIMIT);
-    REX::INFO(" - XP Gain Settings: Enabled={}, Ratio={}, KillerTolerance={}", XP_ENABLED, XP_RATIO, XP_KILLER_TOLERANCE);
-    REX::INFO(" - Buff Settings: Enabled={}, SetValues={}, HealRate={}, CombatHealRate={}, DmgResist={}, FireResist={}, ElectricalResist={}, FrostResist={}, EnergyResist={}, PoisonResist={}, RadiationResist={}", BUFF_ENABLED, BUFF_SET_VALUES, BUFF_HEAL_RATE, BUFF_COMBAT_HEAL_RATE, BUFF_DAMAGE_RESIST, BUFF_FIRE_RESIST, BUFF_ELECTRICAL_RESIST, BUFF_FROST_RESIST, BUFF_ENERGY_RESIST, BUFF_POISON_RESIST, BUFF_RADIATION_RESIST);
-    REX::INFO(" - Buff Attributes: Agility={}, Endurance={}, Intelligence={}, Lockpick={}, Luck={}, Perception={}, Sneak={}, Strength={}, CarryWeight={}", BUFF_AGILITY, BUFF_ENDURANCE, BUFF_INTELLIGENCE, BUFF_LOCKPICK, BUFF_LUCK, BUFF_PERCEPTION, BUFF_SNEAK, BUFF_STRENGTH, BUFF_CARRYWEIGHT);
-    REX::INFO(" - Power Armor Settings: Enabled={}, RepairAmount={}", PA_ENABLED, PA_REPAIR_AMOUNT);
-    REX::INFO(" - Perk Settings: Enabled={}, PerkCount={}", PERK_ENABLED, PERK_ID_LIST.size());
-    REX::INFO(" - Keyword Settings: Enabled={}, KeywordCount={}", KEYWORD_ENABLED, KEYWORD_ID_LIST.size());
-    REX::INFO(" - Excluded Actors Count: {}", EXCLUDE_ACTOR_ID_LIST.size());
-    REX::INFO(" - Threat Weights: Weapon={}, Legendary={}, Unique={}, Health={}, Alert={}", THREAT_WEAPON_BONUS, THREAT_LEGENDARY_BONUS, THREAT_UNIQUE_BONUS, THREAT_HEALTH_BONUS, THREAT_ALERT_BONUS);
-    REX::INFO(" - Companion Faction ID: 0x{:08X}", CURRENT_COMPANION_FACTION_ID);
-    REX::INFO(" - ActorValue HC Downed ID: 0x{:08X}", ACTORVALUE_HC_DOWNED_ID);
-    REX::INFO(" - Stimpak Item ID: 0x{:08X}", ITEM_STIMPAK_ID);
-    REX::INFO(" - Repair Kit Item ID: 0x{:08X}", ITEM_REPAIRKIT_ID);
-    REX::INFO(" - Stimpak Race IDs Count: {}", RACE_STIMPAK_ID.size());
-    REX::INFO(" - Animation IDs: Stimpak=0x{:08X}", IDLE_STIMPAK_ID);
-    REX::INFO(" - Keyword IDs: ArmorTypePower=0x{:08X}, IsPowerArmorFrame=0x{:08X}, Animal=0x{:08X}, Robot=0x{:08X}, Synth=0x{:08X}, Kywd_lootexclude_id size={}", KYWD_ARMORTYPEPOWER_ID, KYWD_ISPOWERARMORFRAME_ID, KYWD_ANIMAL_ID, KYWD_ROBOT_ID, KYWD_SYNTH_ID, KYWD_LOOTEXCLUDE_ID_LIST.size());
-    REX::INFO(" - Package IDs: FollowersCompanion=0x{:08X}", PACK_FOLLOWERSCOMPANION_ID);
-    REX::INFO(" - Always Loot Item IDs Count: {}", ITEM_LOOTALWAYS_ID_LIST.size());
-    REX::INFO(" - Lootable Form Types Count: {}", LOOTABLE_FORM_TYPES.size());
+    REX::INFO("--- CCBCL.ini Configuration Values ---");
+    // Log Booleans
+    for (auto const& [key, ptr] : boolMap) {
+        REX::INFO(" [BOOL]  {:.<30} {}", key, *ptr);
+    }
+    // Log Floats
+    for (auto const& [key, ptr] : floatMap) {
+        REX::INFO(" [FLOAT] {:.<30} {:.2f}", key, *ptr);
+    }
+    // Log Ints
+    for (auto const& [key, ptr] : intMap) {
+        REX::INFO(" [INT]   {:.<30} {}", key, *ptr);
+    }
+    // Log Single Hex IDs
+    for (auto const& [key, ptr] : hexMap) {
+        REX::INFO(" [HEX]   {:.<30} 0x{:08X}", key, *ptr);
+    }
+    // Log Vectors (Counts and Values)
+    for (auto const& [key, vecPtr] : vectorMap) {
+        std::stringstream ss;
+        for (uint32_t id : *vecPtr) { ss << "0x" << std::uppercase << std::hex << id << " "; }
+        REX::INFO(" [VEC]   {} = Count: {} | IDs: {}", key, vecPtr->size(), ss.str());
+    }
+    // Log Special Cases
+    REX::INFO(" [VEC]   {:.<30} Count: {}", "ai_equip_slots", AI_EQUIP_SLOTS.size());
+    REX::INFO(" [VEC]   {:.<30} Count: {}", "form_type_loot", LOOTABLE_FORM_TYPES.size());
+    REX::INFO("---------------------------------------");
+    REX::INFO("LoadConfig: Complete.");
 }
 
 // Helper function to initialize timers and event sinks
